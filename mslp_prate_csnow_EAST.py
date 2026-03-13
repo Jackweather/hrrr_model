@@ -93,6 +93,7 @@ variable_prate = "PRATE"  # Precipitation Rate
 variable_csnow = "CSNOW"  # Snowfall Rate
 variable_cfrzr = "CFRZR"  # Freezing Rain Rate
 variable_cicep = "CICEP"  # Sleet Rate
+RUN_AVAILABILITY_DELAY_MINUTES = 50
 
 # Adjust available hours to include 03Z, 09Z, 15Z, 21Z with a max forecast range of 18 hours
 available_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
@@ -116,6 +117,10 @@ def print_run_hour_mapping(reference_utc_time):
     for run_hour in available_hours:
         run_utc_time = reference_utc_time.replace(hour=run_hour, minute=0, second=0, microsecond=0)
         print(f"  {run_hour:02d}Z = {format_eastern_time(run_utc_time)}")
+
+
+def floor_to_hour(dt_value):
+    return dt_value.replace(minute=0, second=0, microsecond=0)
 
 # Function to validate if a run time is accessible
 def is_valid_run(run_time):
@@ -142,17 +147,24 @@ def get_forecast_steps(run_hour):
     return list(range(1, 49, 1))  # Default 48-hour forecast in 3-hour steps
 
 # Calculate the most recent HRRR run dynamically
-current_utc_time = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+now_utc = datetime.now(timezone.utc)
+current_utc_time = floor_to_hour(now_utc)
 current_eastern_time = current_utc_time.astimezone(EASTERN_TZ)
+selection_reference_utc = floor_to_hour(now_utc - timedelta(minutes=RUN_AVAILABILITY_DELAY_MINUTES))
 most_recent_run_time = None
 
 print(f"Current time UTC: {current_utc_time.strftime('%Y-%m-%d %HZ')}")
 print(f"Current time Eastern: {current_eastern_time.strftime('%Y-%m-%d %I:%M %p %Z')}")
+print(
+    f"Selecting from runs at least {RUN_AVAILABILITY_DELAY_MINUTES} minutes old: "
+    f"{selection_reference_utc.strftime('%Y-%m-%d %HZ')} "
+    f"({format_eastern_time(selection_reference_utc)})"
+)
 print_run_hour_mapping(current_utc_time)
 
-# Iterate backward to find the most recent valid run, checking all available hours
+# Iterate backward to find the most recent valid run, checking only runs old enough to be complete
 for offset in range(24):  # Check up to 24 hours back
-    candidate_time = (current_utc_time - timedelta(hours=offset)).replace(minute=0, second=0, microsecond=0)
+    candidate_time = selection_reference_utc - timedelta(hours=offset)
     if candidate_time.hour in available_hours and is_valid_run(candidate_time):
         most_recent_run_time = candidate_time
         break
@@ -162,10 +174,10 @@ if most_recent_run_time is None:
     print("No valid run time found in the available hours. Searching for fallback run hour one hour at a time.")
     fallback_found = False
     for offset in range(1, 25):  # Search up to 24 hours back, one hour at a time
-        candidate_time = current_utc_time - timedelta(hours=offset)
+        candidate_time = selection_reference_utc - timedelta(hours=offset)
         candidate_hour = candidate_time.hour
         if candidate_hour in available_hours:
-            candidate_time = candidate_time.replace(minute=0, second=0, microsecond=0)
+            candidate_time = floor_to_hour(candidate_time)
             if is_valid_run(candidate_time):
                 most_recent_run_time = candidate_time
                 print(
@@ -184,20 +196,9 @@ print(
 
 forecast_step_numbers = get_forecast_steps(most_recent_run_time.hour)
 
-# Define previous_run_time as the most recent run time minus the forecast interval
-previous_run_time = most_recent_run_time - timedelta(hours=1)
-
-print(
-    f"Fallback HRRR run: {previous_run_time.strftime('%Y-%m-%d %HZ')} "
-    f"({format_eastern_time(previous_run_time)})"
-)
-
 # Function to get date and hour strings for a given run time
 def get_run_strings(run_time):
     return run_time.strftime("%Y%m%d"), run_time.strftime("%H")
-
-# Start with the most recent run
-date_str, hour_str = get_run_strings(most_recent_run_time)
 
 # Levels and colormaps
 mslp_levels = np.arange(960, 1050 + 2, 2)
@@ -226,8 +227,8 @@ def download_grib(url, file_path):
         print(f"Failed to download {os.path.basename(file_path)} (Status Code: {response.status_code})")
         return None
 
-def get_hrrr_grib(step, variable):
-    global date_str, hour_str  # Allow fallback to modify these variables
+def get_hrrr_grib(run_time, step, variable):
+    date_str, hour_str = get_run_strings(run_time)
     file_name = f"hrrr.t{hour_str}z.wrfsfcf{step:02d}.grib2"
     file_path = os.path.join(grib_dir, f"{variable.lower()}_{file_name}")
     url = (
@@ -236,30 +237,10 @@ def get_hrrr_grib(step, variable):
         f"&var_{variable}=on"
         f"&dir=%2Fhrrr.{date_str}%2Fconus"
     )
-    if download_grib(url, file_path):
-        return file_path
-    else:
-        # Fallback to the previous run if the most recent run fails
-        print(f"Falling back to previous run for step {step}, variable {variable}")
-        fallback_date_str, fallback_hour_str = get_run_strings(previous_run_time)
-        fallback_file_name = f"hrrr.t{fallback_hour_str}z.wrfsfcf{step:02d}.grib2"
-        fallback_file_path = os.path.join(grib_dir, f"{variable.lower()}_{fallback_file_name}")
-        fallback_url = (
-            f"{base_url_hrrr}?file={fallback_file_name}"
-            f"&lev_surface=on&lev_mean_sea_level=on"
-            f"&var_{variable}=on"
-            f"&dir=%2Fhrrr.{fallback_date_str}%2Fconus"
-        )
-        if download_grib(fallback_url, fallback_file_path):
-            # Update global date_str and hour_str to fallback values
-            date_str, hour_str = fallback_date_str, fallback_hour_str
-            return fallback_file_path
-        else:
-            print(f"Failed to download {variable} for both runs (step {step})")
-            return None
+    return download_grib(url, file_path)
 
 # --- Plotting function (uses adjusted NY extent) ---
-def plot_combined(mslp_path, prate_path, step, csnow_path=None, cfrzr_path=None, cicep_path=None):
+def plot_combined(mslp_path, prate_path, step, run_time, csnow_path=None, cfrzr_path=None, cicep_path=None):
     try:
         # Open datasets with dask chunking for lazy loading
         ds_mslp = xr.open_dataset(mslp_path, engine="cfgrib", chunks={})
@@ -342,9 +323,8 @@ def plot_combined(mslp_path, prate_path, step, csnow_path=None, cfrzr_path=None,
         # Do not mask weather data to region; plot full grid
 
         # --- Title/time calculation --- use timezone-aware conversion so DST is handled
-        base_time = datetime.strptime(f"{date_str} {hour_str}", "%Y%m%d %H")
-        # treat base_time as UTC
-        base_time_utc = base_time.replace(tzinfo=timezone.utc)
+        date_str, hour_str = get_run_strings(run_time)
+        base_time_utc = run_time.replace(minute=0, second=0, microsecond=0)
         valid_time = base_time_utc + timedelta(hours=step)  # Forecast valid time in UTC
         # convert valid_time to America/New_York to get local hour and weekday (handles DST)
         local_valid = valid_time.astimezone(ZoneInfo('America/New_York'))
@@ -577,21 +557,26 @@ clear_folder(png_dir)
 # Main process
 for step_group in forecast_steps:
     for step in step_group:
-        mslp_grib = get_hrrr_grib(step, "MSLMA")
-        prate_grib = get_hrrr_grib(step, "PRATE")
-        csnow_grib = get_hrrr_grib(step, "CSNOW")
-        cfrzr_grib = get_hrrr_grib(step, "CFRZR")
-        cicep_grib = get_hrrr_grib(step, "CICEP")
+        mslp_grib = get_hrrr_grib(most_recent_run_time, step, "MSLMA")
+        prate_grib = get_hrrr_grib(most_recent_run_time, step, "PRATE")
+        csnow_grib = get_hrrr_grib(most_recent_run_time, step, "CSNOW")
+        cfrzr_grib = get_hrrr_grib(most_recent_run_time, step, "CFRZR")
+        cicep_grib = get_hrrr_grib(most_recent_run_time, step, "CICEP")
 
         if mslp_grib and prate_grib:
-            plot_combined(mslp_grib, prate_grib, step, csnow_grib, cfrzr_grib, cicep_grib)
+            plot_combined(mslp_grib, prate_grib, step, most_recent_run_time, csnow_grib, cfrzr_grib, cicep_grib)
+        else:
+            print(
+                f"Skipping forecast hour {step:02d} for run {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
+                "because required files are not available."
+            )
 
-            # Delete GRIB files after processing
-            for grib_file in [mslp_grib, prate_grib, csnow_grib, cfrzr_grib, cicep_grib]:
-                if grib_file and os.path.exists(grib_file):
-                    os.remove(grib_file)
+        # Delete GRIB files after processing or skip
+        for grib_file in [mslp_grib, prate_grib, csnow_grib, cfrzr_grib, cicep_grib]:
+            if grib_file and os.path.exists(grib_file):
+                os.remove(grib_file)
 
-            # Collect garbage
-            gc.collect()
+        # Collect garbage
+        gc.collect()
 
 print("HRRR processing complete.")
