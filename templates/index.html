@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>HRRR PNG Viewer</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #08111f;
+            --panel: rgba(10, 19, 35, 0.92);
+            --panel-strong: rgba(6, 13, 25, 0.96);
+            --text: #f3f7ff;
+            --muted: #9db1cc;
+            --accent: #66d9ef;
+            --border: rgba(157, 177, 204, 0.22);
+            --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at top, rgba(102, 217, 239, 0.12), transparent 32%),
+                linear-gradient(180deg, #10213d 0%, var(--bg) 38%, #050a12 100%);
+        }
+
+        .viewer {
+            display: grid;
+            grid-template-rows: 1fr auto;
+            min-height: 100vh;
+        }
+
+        .stage {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px 20px 0;
+            min-height: 0;
+        }
+
+        .image-shell {
+            position: relative;
+            width: 100%;
+            height: calc(100vh - 132px);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            overflow: hidden;
+            background: rgba(4, 10, 20, 0.78);
+            box-shadow: var(--shadow);
+        }
+
+        .image-shell img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+
+        .empty-state {
+            display: grid;
+            place-items: center;
+            width: 100%;
+            height: 100%;
+            padding: 32px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 1.1rem;
+        }
+
+        .controls {
+            position: sticky;
+            bottom: 0;
+            display: grid;
+            gap: 10px;
+            padding: 16px 20px 18px;
+            background: var(--panel-strong);
+            border-top: 1px solid var(--border);
+            box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.24);
+        }
+
+        .slider-row {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .slider-row button {
+            border: 1px solid var(--border);
+            background: rgba(255, 255, 255, 0.03);
+            color: var(--text);
+            border-radius: 999px;
+            padding: 10px 16px;
+            font-size: 0.95rem;
+            cursor: pointer;
+        }
+
+        .slider-row button:hover {
+            border-color: rgba(102, 217, 239, 0.45);
+        }
+
+        .slider-row button:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            accent-color: var(--accent);
+        }
+
+        .footer-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            font-size: 0.92rem;
+            color: var(--muted);
+        }
+
+        .footer-meta strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        @media (max-width: 720px) {
+            .stage {
+                padding: 12px 12px 0;
+            }
+
+            .image-shell {
+                height: calc(100vh - 150px);
+                border-radius: 12px;
+            }
+
+            .footer-meta,
+            .slider-row {
+                grid-template-columns: 1fr;
+                display: grid;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="viewer">
+        <main class="stage">
+            <section class="image-shell">
+                {% if images %}
+                    <img id="forecastImage" src="{{ images[0].url }}" alt="HRRR forecast image">
+                {% else %}
+                    <div class="empty-state">
+                        <div>
+                            <div>No PNG files found.</div>
+                            <div>Expected folder: {{ png_dir }}</div>
+                        </div>
+                    </div>
+                {% endif %}
+            </section>
+        </main>
+
+        <section class="controls">
+            <div class="slider-row">
+                <button id="prevButton" type="button">Previous</button>
+                <input id="frameSlider" type="range" min="0" max="{{ image_count - 1 if image_count else 0 }}" value="0" {% if not images %}disabled{% endif %}>
+                <button id="nextButton" type="button">Next</button>
+            </div>
+            <div class="footer-meta">
+                <div><strong id="positionText">{% if images %}1 / {{ image_count }}{% else %}0 / 0{% endif %}</strong></div>
+                <div>Use the slider or arrow keys to change frames.</div>
+            </div>
+        </section>
+    </div>
+
+    <script id="imagesData" type="application/json">{{ images | tojson }}</script>
+    <script>
+        let images = JSON.parse(document.getElementById("imagesData").textContent);
+        const slider = document.getElementById("frameSlider");
+        const image = document.getElementById("forecastImage");
+        const positionText = document.getElementById("positionText");
+        const prevButton = document.getElementById("prevButton");
+        const nextButton = document.getElementById("nextButton");
+        let currentIndex = 0;
+
+        function updateButtons(index) {
+            if (!prevButton || !nextButton) {
+                return;
+            }
+            prevButton.disabled = index <= 0;
+            nextButton.disabled = index >= images.length - 1;
+        }
+
+        function updateFrame(index) {
+            if (!images.length || !image) {
+                updateButtons(0);
+                return;
+            }
+
+            const item = images[index];
+            image.src = item.url;
+            image.alt = item.filename;
+            positionText.textContent = `${index + 1} / ${images.length}`;
+            slider.value = index;
+            currentIndex = index;
+            updateButtons(index);
+        }
+
+        function syncSlider() {
+            slider.max = Math.max(images.length - 1, 0);
+            slider.disabled = images.length === 0;
+        }
+
+        async function refreshImages() {
+            try {
+                const response = await fetch("/api/images", { cache: "no-store" });
+                if (!response.ok) {
+                    return;
+                }
+
+                const nextImages = await response.json();
+                if (JSON.stringify(nextImages) === JSON.stringify(images)) {
+                    return;
+                }
+
+                const currentFilename = images[currentIndex]?.filename;
+                images = nextImages;
+                syncSlider();
+
+                if (!images.length) {
+                    positionText.textContent = "0 / 0";
+                    updateButtons(0);
+                    return;
+                }
+
+                const matchingIndex = images.findIndex(item => item.filename === currentFilename);
+                const nextIndex = matchingIndex >= 0 ? matchingIndex : Math.min(currentIndex, images.length - 1);
+                updateFrame(nextIndex);
+            } catch {
+                return;
+            }
+        }
+
+        if (slider && images.length) {
+            syncSlider();
+            slider.addEventListener("input", event => {
+                updateFrame(Number(event.target.value));
+            });
+
+            prevButton.addEventListener("click", () => {
+                const nextIndex = Math.max(Number(slider.value) - 1, 0);
+                updateFrame(nextIndex);
+            });
+
+            nextButton.addEventListener("click", () => {
+                const nextIndex = Math.min(Number(slider.value) + 1, images.length - 1);
+                updateFrame(nextIndex);
+            });
+
+            document.addEventListener("keydown", event => {
+                if (event.key === "ArrowLeft") {
+                    updateFrame(Math.max(Number(slider.value) - 1, 0));
+                }
+                if (event.key === "ArrowRight") {
+                    updateFrame(Math.min(Number(slider.value) + 1, images.length - 1));
+                }
+            });
+
+            updateFrame(0);
+        } else {
+            syncSlider();
+            updateButtons(0);
+        }
+
+        window.setInterval(refreshImages, 5000);
+    </script>
+</body>
+</html>
