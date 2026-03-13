@@ -37,6 +37,11 @@
             min-height: 100vh;
         }
 
+        .viewer.is-loading .controls {
+            pointer-events: none;
+            opacity: 0.6;
+        }
+
         .stage {
             display: flex;
             align-items: center;
@@ -54,6 +59,92 @@
             overflow: hidden;
             background: rgba(4, 10, 20, 0.78);
             box-shadow: var(--shadow);
+        }
+
+        .loading-screen {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            padding: 32px;
+            background:
+                linear-gradient(180deg, rgba(6, 13, 25, 0.84), rgba(3, 8, 16, 0.94)),
+                radial-gradient(circle at top, rgba(102, 217, 239, 0.18), transparent 40%);
+            z-index: 5;
+            transition: opacity 220ms ease, visibility 220ms ease;
+        }
+
+        .loading-screen.is-hidden {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+
+        .is-hidden {
+            display: none !important;
+        }
+
+        .loading-card {
+            width: min(420px, 100%);
+            padding: 24px 22px;
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            background: rgba(8, 16, 30, 0.88);
+            box-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
+            text-align: center;
+        }
+
+        .loading-spinner {
+            width: 56px;
+            height: 56px;
+            margin: 0 auto 18px;
+            border-radius: 50%;
+            border: 3px solid rgba(102, 217, 239, 0.18);
+            border-top-color: var(--accent);
+            animation: spin 0.9s linear infinite;
+        }
+
+        .loading-title {
+            margin: 0;
+            font-size: 1.15rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+
+        .loading-copy {
+            margin: 10px 0 18px;
+            color: var(--muted);
+            font-size: 0.96rem;
+            line-height: 1.5;
+        }
+
+        .loading-progress {
+            display: grid;
+            gap: 10px;
+        }
+
+        .loading-bar {
+            width: 100%;
+            height: 10px;
+            overflow: hidden;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.07);
+        }
+
+        .loading-bar-fill {
+            width: 0%;
+            height: 100%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #4bc0d9 0%, #8ef6ff 100%);
+            transition: width 160ms ease;
+        }
+
+        .loading-meta {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            color: var(--muted);
+            font-size: 0.9rem;
         }
 
         .image-shell img {
@@ -130,6 +221,12 @@
             font-weight: 600;
         }
 
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
         @media (max-width: 720px) {
             .stage {
                 padding: 12px 12px 0;
@@ -152,16 +249,29 @@
     <div class="viewer">
         <main class="stage">
             <section class="image-shell">
-                {% if images %}
-                    <img id="forecastImage" src="{{ images[0].url }}" alt="HRRR forecast image">
-                {% else %}
-                    <div class="empty-state">
-                        <div>
-                            <div>No PNG files found.</div>
-                            <div>Expected folder: {{ png_dir }}</div>
+                <div id="loadingScreen" class="loading-screen" aria-live="polite">
+                    <div class="loading-card">
+                        <div class="loading-spinner" aria-hidden="true"></div>
+                        <p id="loadingTitle" class="loading-title">Loading forecast frames</p>
+                        <p id="loadingCopy" class="loading-copy">Preparing PNGs for the viewer.</p>
+                        <div class="loading-progress">
+                            <div class="loading-bar" aria-hidden="true">
+                                <div id="loadingBarFill" class="loading-bar-fill"></div>
+                            </div>
+                            <div class="loading-meta">
+                                <span id="loadingCount">0 / 0</span>
+                                <span id="loadingPercent">0%</span>
+                            </div>
                         </div>
                     </div>
-                {% endif %}
+                </div>
+                <img id="forecastImage" src="{{ images[0].url if images else '' }}" alt="HRRR forecast image"{% if not images %} class="is-hidden"{% endif %}>
+                <div id="emptyState" class="empty-state{% if images %} is-hidden{% endif %}">
+                    <div>
+                        <div>No PNG files found.</div>
+                        <div>Expected folder: {{ png_dir }}</div>
+                    </div>
+                </div>
             </section>
         </main>
 
@@ -186,7 +296,72 @@
         const positionText = document.getElementById("positionText");
         const prevButton = document.getElementById("prevButton");
         const nextButton = document.getElementById("nextButton");
+        const emptyState = document.getElementById("emptyState");
+        const viewer = document.querySelector(".viewer");
+        const loadingScreen = document.getElementById("loadingScreen");
+        const loadingTitle = document.getElementById("loadingTitle");
+        const loadingCopy = document.getElementById("loadingCopy");
+        const loadingBarFill = document.getElementById("loadingBarFill");
+        const loadingCount = document.getElementById("loadingCount");
+        const loadingPercent = document.getElementById("loadingPercent");
         let currentIndex = 0;
+        let activeLoadToken = 0;
+
+        function setLoadingProgress(loadedCount, totalCount) {
+            const safeTotal = Math.max(totalCount, 1);
+            const percent = totalCount ? Math.round((loadedCount / safeTotal) * 100) : 0;
+            loadingBarFill.style.width = `${percent}%`;
+            loadingCount.textContent = `${loadedCount} / ${totalCount}`;
+            loadingPercent.textContent = `${percent}%`;
+        }
+
+        function showLoading(title, copy, loadedCount = 0, totalCount = images.length) {
+            viewer.classList.add("is-loading");
+            loadingTitle.textContent = title;
+            loadingCopy.textContent = copy;
+            setLoadingProgress(loadedCount, totalCount);
+            loadingScreen.classList.remove("is-hidden");
+        }
+
+        function hideLoading() {
+            viewer.classList.remove("is-loading");
+            loadingScreen.classList.add("is-hidden");
+        }
+
+        async function preloadImageSet(imageSet, title, copy) {
+            const loadToken = ++activeLoadToken;
+
+            if (!imageSet.length) {
+                showLoading("Waiting for forecast frames", "The viewer will open automatically when PNGs are available.", 0, 0);
+                return [];
+            }
+
+            showLoading(title, copy, 0, imageSet.length);
+
+            let loadedCount = 0;
+            const results = await Promise.all(imageSet.map(item => new Promise(resolve => {
+                const preloadedImage = new Image();
+
+                function finalize() {
+                    loadedCount += 1;
+                    if (loadToken === activeLoadToken) {
+                        setLoadingProgress(loadedCount, imageSet.length);
+                    }
+                    resolve(item);
+                }
+
+                preloadedImage.onload = finalize;
+                preloadedImage.onerror = finalize;
+                preloadedImage.src = item.url;
+            })));
+
+            if (loadToken !== activeLoadToken) {
+                return null;
+            }
+
+            hideLoading();
+            return results;
+        }
 
         function updateButtons(index) {
             if (!prevButton || !nextButton) {
@@ -196,13 +371,20 @@
             nextButton.disabled = index >= images.length - 1;
         }
 
+        function renderImageState(hasImages) {
+            image.classList.toggle("is-hidden", !hasImages);
+            emptyState.classList.toggle("is-hidden", hasImages);
+        }
+
         function updateFrame(index) {
             if (!images.length || !image) {
+                renderImageState(false);
                 updateButtons(0);
                 return;
             }
 
             const item = images[index];
+            renderImageState(true);
             image.src = item.url;
             image.alt = item.filename;
             positionText.textContent = `${index + 1} / ${images.length}`;
@@ -229,10 +411,20 @@
                 }
 
                 const currentFilename = images[currentIndex]?.filename;
-                images = nextImages;
+                const preloadedImages = await preloadImageSet(
+                    nextImages,
+                    "Refreshing forecast frames",
+                    "Loading the latest PNG set before the viewer updates."
+                );
+                if (preloadedImages === null) {
+                    return;
+                }
+
+                images = preloadedImages;
                 syncSlider();
 
                 if (!images.length) {
+                    renderImageState(false);
                     positionText.textContent = "0 / 0";
                     updateButtons(0);
                     return;
@@ -271,10 +463,23 @@
                 }
             });
 
-            updateFrame(0);
+            preloadImageSet(
+                images,
+                "Loading forecast frames",
+                "Preparing every PNG before the first frame is shown."
+            ).then(preloadedImages => {
+                if (!preloadedImages) {
+                    return;
+                }
+                images = preloadedImages;
+                syncSlider();
+                updateFrame(0);
+            });
         } else {
             syncSlider();
+            renderImageState(false);
             updateButtons(0);
+            showLoading("Waiting for forecast frames", "The viewer will open automatically when PNGs are available.", 0, 0);
         }
 
         window.setInterval(refreshImages, 5000);
