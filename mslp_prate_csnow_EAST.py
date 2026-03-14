@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -64,27 +65,17 @@ region_gdf, REGION_EXTENT, region_outline, region_states_gdf = get_eastern_geoda
 
 # Set base directory for HRRR output
 BASE_DIR = '/var/data'
+RUN_ROOT_DIR = os.path.join(BASE_DIR, "mslp_prate_csnow_EAST")
+RUNS_DIR = os.path.join(RUN_ROOT_DIR, "runs")
+MAX_SAVED_RUNS = 7
 
-# Output directories (use new region folder)
-grib_dir = os.path.join(BASE_DIR, "mslp_prate_csnow_EAST", "grib")
-png_dir = os.path.join(BASE_DIR, "mslp_prate_csnow_EAST", "png")
+# Output directories
+grib_dir = os.path.join(RUN_ROOT_DIR, "grib")
 os.makedirs(grib_dir, exist_ok=True)
+os.makedirs(RUNS_DIR, exist_ok=True)
 
-# Remove entire png folder if it exists (ensures it's truly cleared), then recreate it
-if os.path.isdir(png_dir):
-    try:
-        shutil.rmtree(png_dir)
-        print(f"Removed existing png directory: {png_dir}")
-    except Exception as e:
-        print(f"Failed to remove png directory {png_dir}: {e}")
-os.makedirs(png_dir, exist_ok=True)
-
-# File to track completed forecast steps for the current run
-processed_steps_file = os.path.join(BASE_DIR, "mslp_prate_csnow_EAST", "processed_steps.txt")
-
-# Clear the processed steps file at the start of a new run
-if os.path.exists(processed_steps_file):
-    os.remove(processed_steps_file)
+png_dir = None
+processed_steps_file = None
 
 # HRRR URL and variables
 base_url_hrrr = "https://nomads.ncep.noaa.gov/cgi-bin/filter_hrrr_2d.pl"
@@ -121,6 +112,56 @@ def print_run_hour_mapping(reference_utc_time):
 
 def floor_to_hour(dt_value):
     return dt_value.replace(minute=0, second=0, microsecond=0)
+
+
+def get_run_id(run_time):
+    return f"{run_time.strftime('%Y%m%d_%H')}z"
+
+
+def prepare_run_output(run_time):
+    run_id = get_run_id(run_time)
+    run_dir = os.path.join(RUNS_DIR, run_id)
+    run_png_dir = os.path.join(run_dir, "png")
+    run_processed_steps_file = os.path.join(run_dir, "processed_steps.txt")
+
+    if os.path.isdir(run_png_dir):
+        try:
+            shutil.rmtree(run_png_dir)
+            print(f"Removed existing png directory for run {run_id}: {run_png_dir}")
+        except Exception as e:
+            print(f"Failed to remove png directory {run_png_dir}: {e}")
+
+    os.makedirs(run_png_dir, exist_ok=True)
+
+    if os.path.exists(run_processed_steps_file):
+        os.remove(run_processed_steps_file)
+
+    return run_id, run_dir, run_png_dir, run_processed_steps_file
+
+
+def prune_old_runs(max_saved_runs, keep_run_id=None):
+    run_names = []
+    for name in os.listdir(RUNS_DIR):
+        run_path = os.path.join(RUNS_DIR, name)
+        if os.path.isdir(run_path) and re.fullmatch(r"\d{8}_\d{2}z", name):
+            run_names.append(name)
+
+    run_names.sort(reverse=True)
+    keep_names = []
+    for run_name in run_names:
+        if run_name == keep_run_id or len(keep_names) < max_saved_runs:
+            keep_names.append(run_name)
+
+    for run_name in run_names:
+        if run_name in keep_names:
+            continue
+
+        run_path = os.path.join(RUNS_DIR, run_name)
+        try:
+            shutil.rmtree(run_path)
+            print(f"Removed archived run: {run_name}")
+        except Exception as e:
+            print(f"Failed to remove archived run {run_name}: {e}")
 
 # Function to validate if a run time is accessible
 def is_valid_run(run_time):
@@ -193,6 +234,9 @@ print(
     f"Selected HRRR run: {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
     f"({format_eastern_time(most_recent_run_time)})"
 )
+
+current_run_id, current_run_dir, png_dir, processed_steps_file = prepare_run_output(most_recent_run_time)
+print(f"Writing PNG output for run {current_run_id} to {png_dir}")
 
 forecast_step_numbers = get_forecast_steps(most_recent_run_time.hour)
 
@@ -552,7 +596,6 @@ def clear_folder(folder_path):
 
 # Clear the folders at the start of the script
 clear_folder(grib_dir)
-clear_folder(png_dir)
 
 # Main process
 for step_group in forecast_steps:
@@ -579,4 +622,5 @@ for step_group in forecast_steps:
         # Collect garbage
         gc.collect()
 
+    prune_old_runs(MAX_SAVED_RUNS, keep_run_id=current_run_id)
 print("HRRR processing complete.")
