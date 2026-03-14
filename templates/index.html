@@ -176,6 +176,31 @@
             box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.24);
         }
 
+        .run-row {
+            display: grid;
+            grid-template-columns: auto minmax(0, 320px);
+            align-items: center;
+            gap: 12px;
+        }
+
+        .run-label {
+            color: var(--muted);
+            font-size: 0.9rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+        }
+
+        .run-select {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text);
+            padding: 10px 12px;
+            font-size: 0.95rem;
+        }
+
         .slider-row {
             display: grid;
             align-items: center;
@@ -191,6 +216,7 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
+            flex-wrap: wrap;
             gap: 12px;
             font-size: 0.92rem;
             color: var(--muted);
@@ -215,6 +241,10 @@
             .image-shell {
                 height: calc(100vh - 150px);
                 border-radius: 12px;
+            }
+
+            .run-row {
+                grid-template-columns: 1fr;
             }
 
             .footer-meta,
@@ -256,19 +286,32 @@
         </main>
 
         <section class="controls">
+            <div class="run-row">
+                <label class="run-label" for="runSelect">Run</label>
+                <select id="runSelect" class="run-select" {% if not runs %}disabled{% endif %}>
+                    {% for run in runs %}
+                    <option value="{{ run.id }}" {% if run.id == selected_run %}selected{% endif %}>{{ run.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
             <div class="slider-row">
                 <input id="frameSlider" type="range" min="0" max="{{ image_count - 1 if image_count else 0 }}" value="0" {% if not images %}disabled{% endif %}>
             </div>
             <div class="footer-meta">
                 <div><strong id="positionText">{% if images %}1 / {{ image_count }}{% else %}0 / 0{% endif %}</strong></div>
+                <div id="runStatus">{% if runs and selected_run %}Run: {% for run in runs %}{% if run.id == selected_run %}{{ run.label }}{% endif %}{% endfor %}{% else %}No saved runs{% endif %}</div>
                 <div>Use the slider or arrow keys to change frames.</div>
             </div>
         </section>
     </div>
 
     <script id="imagesData" type="application/json">{{ images | tojson }}</script>
+    <script id="runsData" type="application/json">{{ runs | tojson }}</script>
+    <script id="selectedRunData" type="application/json">{{ selected_run | tojson }}</script>
     <script>
         let images = JSON.parse(document.getElementById("imagesData").textContent);
+        let availableRuns = JSON.parse(document.getElementById("runsData").textContent);
+        let selectedRunId = JSON.parse(document.getElementById("selectedRunData").textContent);
         const slider = document.getElementById("frameSlider");
         const image = document.getElementById("forecastImage");
         const positionText = document.getElementById("positionText");
@@ -280,9 +323,62 @@
         const loadingBarFill = document.getElementById("loadingBarFill");
         const loadingCount = document.getElementById("loadingCount");
         const loadingPercent = document.getElementById("loadingPercent");
+        const runSelect = document.getElementById("runSelect");
+        const runStatus = document.getElementById("runStatus");
         let currentIndex = 0;
         let activeLoadToken = 0;
         let hasCompletedInitialLoad = false;
+        let followingLatestRun = true;
+
+        function getLatestRunId() {
+            return availableRuns[0]?.id ?? null;
+        }
+
+        function getRunLabel(runId) {
+            return availableRuns.find(run => run.id === runId)?.label ?? "No saved runs";
+        }
+
+        function syncRunSelect() {
+            if (!runSelect) {
+                return;
+            }
+
+            runSelect.innerHTML = "";
+            if (!availableRuns.length) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No saved runs";
+                runSelect.append(option);
+                runSelect.disabled = true;
+                return;
+            }
+
+            for (const run of availableRuns) {
+                const option = document.createElement("option");
+                option.value = run.id;
+                option.textContent = run.label;
+                runSelect.append(option);
+            }
+
+            runSelect.disabled = false;
+            if (selectedRunId && availableRuns.some(run => run.id === selectedRunId)) {
+                runSelect.value = selectedRunId;
+                return;
+            }
+
+            selectedRunId = getLatestRunId();
+            if (selectedRunId) {
+                runSelect.value = selectedRunId;
+            }
+        }
+
+        function updateRunStatus() {
+            if (!runStatus) {
+                return;
+            }
+
+            runStatus.textContent = selectedRunId ? `Run: ${getRunLabel(selectedRunId)}` : "No saved runs";
+        }
 
         function setLoadingProgress(loadedCount, totalCount) {
             const safeTotal = Math.max(totalCount, 1);
@@ -372,19 +468,75 @@
             slider.disabled = images.length === 0;
         }
 
-        async function refreshImages() {
+        function applyImages(nextImages, nextRunId) {
+            const currentFilename = images[currentIndex]?.filename;
+            images = nextImages;
+            selectedRunId = nextRunId;
+            syncRunSelect();
+            syncSlider();
+
+            if (!images.length) {
+                renderImageState(false);
+                positionText.textContent = "0 / 0";
+                updateRunStatus();
+                return;
+            }
+
+            const matchingIndex = images.findIndex(item => item.filename === currentFilename);
+            const nextIndex = matchingIndex >= 0 ? matchingIndex : Math.min(currentIndex, images.length - 1);
+            updateFrame(nextIndex);
+            updateRunStatus();
+        }
+
+        async function loadRun(runId, options = {}) {
+            const { showOverlay = false } = options;
+
             try {
-                const response = await fetch("/api/images", { cache: "no-store" });
+                const response = await fetch(`/api/images?run=${encodeURIComponent(runId)}`, { cache: "no-store" });
                 if (!response.ok) {
                     return;
                 }
 
-                const nextImages = await response.json();
-                if (JSON.stringify(nextImages) === JSON.stringify(images)) {
+                const payload = await response.json();
+                const nextRunId = payload.run_id ?? runId;
+                const nextImages = payload.images ?? [];
+                const preloadedImages = await preloadImageSet(
+                    nextImages,
+                    "Loading run archive",
+                    "Preparing the selected run before the viewer updates.",
+                    { showOverlay }
+                );
+                if (preloadedImages === null) {
                     return;
                 }
 
-                const currentFilename = images[currentIndex]?.filename;
+                applyImages(preloadedImages, nextRunId);
+                if (preloadedImages.length) {
+                    hasCompletedInitialLoad = true;
+                }
+            } catch {
+                return;
+            }
+        }
+
+        async function refreshImages() {
+            try {
+                if (!selectedRunId) {
+                    return;
+                }
+
+                const response = await fetch(`/api/images?run=${encodeURIComponent(selectedRunId)}`, { cache: "no-store" });
+                if (!response.ok) {
+                    return;
+                }
+
+                const payload = await response.json();
+                const nextRunId = payload.run_id ?? selectedRunId;
+                const nextImages = payload.images ?? [];
+                if (nextRunId === selectedRunId && JSON.stringify(nextImages) === JSON.stringify(images)) {
+                    return;
+                }
+
                 const preloadedImages = await preloadImageSet(
                     nextImages,
                     "Refreshing forecast frames",
@@ -395,39 +547,68 @@
                     return;
                 }
 
-                images = preloadedImages;
-                syncSlider();
-
-                if (!images.length) {
-                    renderImageState(false);
-                    positionText.textContent = "0 / 0";
-                    return;
+                applyImages(preloadedImages, nextRunId);
+                if (preloadedImages.length) {
+                    hasCompletedInitialLoad = true;
                 }
-
-                hasCompletedInitialLoad = true;
-                const matchingIndex = images.findIndex(item => item.filename === currentFilename);
-                const nextIndex = matchingIndex >= 0 ? matchingIndex : Math.min(currentIndex, images.length - 1);
-                updateFrame(nextIndex);
             } catch {
                 return;
             }
         }
 
+        async function refreshRunsAndImages() {
+            try {
+                const response = await fetch("/api/runs", { cache: "no-store" });
+                if (response.ok) {
+                    const payload = await response.json();
+                    availableRuns = payload.runs ?? [];
+                    syncRunSelect();
+
+                    const latestRunId = getLatestRunId();
+                    const selectedRunExists = availableRuns.some(run => run.id === selectedRunId);
+                    if (!selectedRunExists && latestRunId) {
+                        followingLatestRun = true;
+                        await loadRun(latestRunId);
+                        return;
+                    }
+
+                    if (followingLatestRun && latestRunId && latestRunId !== selectedRunId) {
+                        await loadRun(latestRunId);
+                        return;
+                    }
+                }
+
+                updateRunStatus();
+                await refreshImages();
+            } catch {
+                return;
+            }
+        }
+
+        syncRunSelect();
+        updateRunStatus();
+
+        slider.addEventListener("input", event => {
+            updateFrame(Number(event.target.value));
+        });
+
+        runSelect?.addEventListener("change", event => {
+            const requestedRunId = event.target.value;
+            followingLatestRun = requestedRunId === getLatestRunId();
+            loadRun(requestedRunId);
+        });
+
+        document.addEventListener("keydown", event => {
+            if (event.key === "ArrowLeft") {
+                updateFrame(Math.max(Number(slider.value) - 1, 0));
+            }
+            if (event.key === "ArrowRight") {
+                updateFrame(Math.min(Number(slider.value) + 1, images.length - 1));
+            }
+        });
+
         if (slider && images.length) {
             syncSlider();
-            slider.addEventListener("input", event => {
-                updateFrame(Number(event.target.value));
-            });
-
-            document.addEventListener("keydown", event => {
-                if (event.key === "ArrowLeft") {
-                    updateFrame(Math.max(Number(slider.value) - 1, 0));
-                }
-                if (event.key === "ArrowRight") {
-                    updateFrame(Math.min(Number(slider.value) + 1, images.length - 1));
-                }
-            });
-
             preloadImageSet(
                 images,
                 "Loading forecast frames",
@@ -436,10 +617,10 @@
                 if (!preloadedImages) {
                     return;
                 }
-                images = preloadedImages;
-                syncSlider();
-                hasCompletedInitialLoad = true;
-                updateFrame(0);
+                applyImages(preloadedImages, selectedRunId);
+                if (preloadedImages.length) {
+                    hasCompletedInitialLoad = true;
+                }
             });
         } else {
             syncSlider();
@@ -447,7 +628,7 @@
             showLoading("Waiting for forecast frames", "The viewer will open automatically when PNGs are available.", 0, 0);
         }
 
-        window.setInterval(refreshImages, 5000);
+        window.setInterval(refreshRunsAndImages, 5000);
     </script>
 </body>
 </html>
