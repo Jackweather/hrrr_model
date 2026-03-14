@@ -178,28 +178,8 @@
 
         .slider-row {
             display: grid;
-            grid-template-columns: auto 1fr auto;
             align-items: center;
             gap: 14px;
-        }
-
-        .slider-row button {
-            border: 1px solid var(--border);
-            background: rgba(255, 255, 255, 0.03);
-            color: var(--text);
-            border-radius: 999px;
-            padding: 10px 16px;
-            font-size: 0.95rem;
-            cursor: pointer;
-        }
-
-        .slider-row button:hover {
-            border-color: rgba(102, 217, 239, 0.45);
-        }
-
-        .slider-row button:disabled {
-            opacity: 0.45;
-            cursor: default;
         }
 
         input[type="range"] {
@@ -277,9 +257,7 @@
 
         <section class="controls">
             <div class="slider-row">
-                <button id="prevButton" type="button">Previous</button>
                 <input id="frameSlider" type="range" min="0" max="{{ image_count - 1 if image_count else 0 }}" value="0" {% if not images %}disabled{% endif %}>
-                <button id="nextButton" type="button">Next</button>
             </div>
             <div class="footer-meta">
                 <div><strong id="positionText">{% if images %}1 / {{ image_count }}{% else %}0 / 0{% endif %}</strong></div>
@@ -294,8 +272,6 @@
         const slider = document.getElementById("frameSlider");
         const image = document.getElementById("forecastImage");
         const positionText = document.getElementById("positionText");
-        const prevButton = document.getElementById("prevButton");
-        const nextButton = document.getElementById("nextButton");
         const emptyState = document.getElementById("emptyState");
         const viewer = document.querySelector(".viewer");
         const loadingScreen = document.getElementById("loadingScreen");
@@ -306,6 +282,7 @@
         const loadingPercent = document.getElementById("loadingPercent");
         let currentIndex = 0;
         let activeLoadToken = 0;
+        let hasCompletedInitialLoad = false;
 
         function setLoadingProgress(loadedCount, totalCount) {
             const safeTotal = Math.max(totalCount, 1);
@@ -328,15 +305,20 @@
             loadingScreen.classList.add("is-hidden");
         }
 
-        async function preloadImageSet(imageSet, title, copy) {
+        async function preloadImageSet(imageSet, title, copy, options = {}) {
+            const { showOverlay = true } = options;
             const loadToken = ++activeLoadToken;
 
             if (!imageSet.length) {
-                showLoading("Waiting for forecast frames", "The viewer will open automatically when PNGs are available.", 0, 0);
+                if (showOverlay) {
+                    showLoading("Waiting for forecast frames", "The viewer will open automatically when PNGs are available.", 0, 0);
+                }
                 return [];
             }
 
-            showLoading(title, copy, 0, imageSet.length);
+            if (showOverlay) {
+                showLoading(title, copy, 0, imageSet.length);
+            }
 
             let loadedCount = 0;
             const results = await Promise.all(imageSet.map(item => new Promise(resolve => {
@@ -344,7 +326,7 @@
 
                 function finalize() {
                     loadedCount += 1;
-                    if (loadToken === activeLoadToken) {
+                    if (showOverlay && loadToken === activeLoadToken) {
                         setLoadingProgress(loadedCount, imageSet.length);
                     }
                     resolve(item);
@@ -359,16 +341,10 @@
                 return null;
             }
 
-            hideLoading();
-            return results;
-        }
-
-        function updateButtons(index) {
-            if (!prevButton || !nextButton) {
-                return;
+            if (showOverlay) {
+                hideLoading();
             }
-            prevButton.disabled = index <= 0;
-            nextButton.disabled = index >= images.length - 1;
+            return results;
         }
 
         function renderImageState(hasImages) {
@@ -379,7 +355,6 @@
         function updateFrame(index) {
             if (!images.length || !image) {
                 renderImageState(false);
-                updateButtons(0);
                 return;
             }
 
@@ -390,7 +365,6 @@
             positionText.textContent = `${index + 1} / ${images.length}`;
             slider.value = index;
             currentIndex = index;
-            updateButtons(index);
         }
 
         function syncSlider() {
@@ -414,7 +388,8 @@
                 const preloadedImages = await preloadImageSet(
                     nextImages,
                     "Refreshing forecast frames",
-                    "Loading the latest PNG set before the viewer updates."
+                    "Loading the latest PNG set before the viewer updates.",
+                    { showOverlay: !hasCompletedInitialLoad }
                 );
                 if (preloadedImages === null) {
                     return;
@@ -426,10 +401,10 @@
                 if (!images.length) {
                     renderImageState(false);
                     positionText.textContent = "0 / 0";
-                    updateButtons(0);
                     return;
                 }
 
+                hasCompletedInitialLoad = true;
                 const matchingIndex = images.findIndex(item => item.filename === currentFilename);
                 const nextIndex = matchingIndex >= 0 ? matchingIndex : Math.min(currentIndex, images.length - 1);
                 updateFrame(nextIndex);
@@ -442,16 +417,6 @@
             syncSlider();
             slider.addEventListener("input", event => {
                 updateFrame(Number(event.target.value));
-            });
-
-            prevButton.addEventListener("click", () => {
-                const nextIndex = Math.max(Number(slider.value) - 1, 0);
-                updateFrame(nextIndex);
-            });
-
-            nextButton.addEventListener("click", () => {
-                const nextIndex = Math.min(Number(slider.value) + 1, images.length - 1);
-                updateFrame(nextIndex);
             });
 
             document.addEventListener("keydown", event => {
@@ -473,12 +438,12 @@
                 }
                 images = preloadedImages;
                 syncSlider();
+                hasCompletedInitialLoad = true;
                 updateFrame(0);
             });
         } else {
             syncSlider();
             renderImageState(false);
-            updateButtons(0);
             showLoading("Waiting for forecast frames", "The viewer will open automatically when PNGs are available.", 0, 0);
         }
 
