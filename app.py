@@ -19,6 +19,12 @@ RUN_ID_PATTERN = re.compile(r"^\d{8}_\d{2}z$", re.IGNORECASE)
 LOG_DIR = Path(os.environ.get("HRRR_LOG_DIR", "logs")).expanduser().resolve()
 EASTERN_TZ = ZoneInfo("America/New_York")
 LEGACY_RUN_ID = "legacy"
+DEFAULT_REGION_ID = "northeast"
+REGIONS = [
+    {"id": "northeast", "label": "Northeast"},
+    {"id": "conus", "label": "CONUS"},
+]
+REGION_IDS = {region["id"] for region in REGIONS}
 
 
 def parse_run_id(run_id: str) -> datetime | None:
@@ -43,14 +49,33 @@ def format_run_label(run_id: str) -> str:
     return f"{run_time_utc.strftime('%HZ %b %d')} | {run_time_eastern.strftime('%a %I %p %Z')}"
 
 
-def get_run_directory(run_id: str) -> Path | None:
+def resolve_region_id(requested_region_id: str | None = None) -> str:
+    if requested_region_id in REGION_IDS:
+        return str(requested_region_id)
+
+    return DEFAULT_REGION_ID
+
+
+def get_run_directory(run_id: str, region_id: str = DEFAULT_REGION_ID) -> Path | None:
+    resolved_region_id = resolve_region_id(region_id)
+
     if run_id == LEGACY_RUN_ID:
+        if resolved_region_id != DEFAULT_REGION_ID:
+            return None
         return PNG_DIR
 
     if parse_run_id(run_id) is None:
         return None
 
-    return RUNS_DIR / run_id / "png"
+    run_png_dir = RUNS_DIR / run_id / "png"
+    region_dir = run_png_dir / resolved_region_id
+    if region_dir.is_dir():
+        return region_dir
+
+    if resolved_region_id == DEFAULT_REGION_ID and run_png_dir.is_dir():
+        return run_png_dir
+
+    return None
 
 
 def list_runs() -> list[dict[str, str | int | bool]]:
@@ -61,8 +86,8 @@ def list_runs() -> list[dict[str, str | int | bool]]:
             if not run_dir.is_dir() or parse_run_id(run_dir.name) is None:
                 continue
 
-            image_dir = run_dir / "png"
-            if not image_dir.exists():
+            image_dir = get_run_directory(run_dir.name, DEFAULT_REGION_ID)
+            if image_dir is None or not image_dir.exists():
                 continue
 
             image_count = sum(1 for _ in image_dir.glob("*.png"))
@@ -103,12 +128,13 @@ def resolve_run_id(requested_run_id: str | None = None) -> str | None:
     return None
 
 
-def list_images(run_id: str | None = None) -> tuple[list[dict[str, str | int]], str | None]:
+def list_images(run_id: str | None = None, region_id: str | None = None) -> tuple[list[dict[str, str | int]], str | None, str]:
     resolved_run_id = resolve_run_id(run_id)
-    image_dir = get_run_directory(resolved_run_id) if resolved_run_id else None
+    resolved_region_id = resolve_region_id(region_id)
+    image_dir = get_run_directory(resolved_run_id, resolved_region_id) if resolved_run_id else None
 
     if image_dir is None or not image_dir.is_dir():
-        return [], resolved_run_id
+        return [], resolved_run_id, resolved_region_id
 
     image_items = []
     for image_path in sorted(image_dir.glob("*.png"), key=lambda path: path.name):
@@ -120,11 +146,11 @@ def list_images(run_id: str | None = None) -> tuple[list[dict[str, str | int]], 
                 "filename": image_path.name,
                 "frame": frame,
                 "label": f"Hour {frame:02d}",
-                "url": f"/images/{resolved_run_id}/{image_path.name}?v={int(stat.st_mtime)}",
+                "url": f"/images/{resolved_run_id}/{resolved_region_id}/{image_path.name}?v={int(stat.st_mtime)}",
             }
         )
 
-    return sorted(image_items, key=lambda item: (item["frame"], item["filename"])), resolved_run_id
+    return sorted(image_items, key=lambda item: (item["frame"], item["filename"])), resolved_run_id, resolved_region_id
 
 
 def run_scripts(scripts: list[tuple[str, str]], task_number: int) -> None:
@@ -159,16 +185,19 @@ def run_scripts(scripts: list[tuple[str, str]], task_number: int) -> None:
 @app.route("/")
 def index():
     runs = list_runs()
-    selected_run = resolve_run_id()
-    images, resolved_run_id = list_images(selected_run)
-    image_dir = get_run_directory(resolved_run_id) if resolved_run_id else RUNS_DIR
+    selected_run = resolve_run_id(request.args.get("run"))
+    selected_region = resolve_region_id(request.args.get("region"))
+    images, resolved_run_id, resolved_region_id = list_images(selected_run, selected_region)
+    image_dir = get_run_directory(resolved_run_id, resolved_region_id) if resolved_run_id else RUNS_DIR
     return render_template(
         "index.html",
         images=images,
         image_count=len(images),
         png_dir=str(image_dir),
         runs=runs,
+        regions=REGIONS,
         selected_run=resolved_run_id,
+        selected_region=resolved_region_id,
     )
 
 
@@ -179,8 +208,8 @@ def api_runs():
 
 @app.route("/api/images")
 def api_images():
-    images, resolved_run_id = list_images(request.args.get("run"))
-    return jsonify({"run_id": resolved_run_id, "images": images})
+    images, resolved_run_id, resolved_region_id = list_images(request.args.get("run"), request.args.get("region"))
+    return jsonify({"run_id": resolved_run_id, "region_id": resolved_region_id, "images": images})
 
 
 @app.route("/run-task1")
@@ -193,9 +222,18 @@ def run_task1():
     return "Task started in background! Check logs folder for output.", 200
 
 
+@app.route("/images/<run_id>/<region_id>/<path:filename>")
+def serve_image(run_id: str, region_id: str, filename: str):
+    image_dir = get_run_directory(run_id, region_id)
+    if image_dir is None or not image_dir.is_dir():
+        abort(404)
+
+    return send_from_directory(image_dir, filename)
+
+
 @app.route("/images/<run_id>/<path:filename>")
-def serve_image(run_id: str, filename: str):
-    image_dir = get_run_directory(run_id)
+def serve_legacy_image(run_id: str, filename: str):
+    image_dir = get_run_directory(run_id, DEFAULT_REGION_ID)
     if image_dir is None or not image_dir.is_dir():
         abort(404)
 
