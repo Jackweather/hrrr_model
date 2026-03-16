@@ -22,6 +22,7 @@ LEGACY_RUN_ID = "legacy"
 DEFAULT_REGION_ID = "northeast"
 REGIONS = [
     {"id": "northeast", "label": "Northeast"},
+    {"id": "southeast", "label": "Southeast"},
     {"id": "conus", "label": "CONUS"},
 ]
 REGION_IDS = {region["id"] for region in REGIONS}
