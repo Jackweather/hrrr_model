@@ -62,6 +62,7 @@ def get_eastern_geodata(padding_frac=0.05):
 # Acquire region geodata once (cache shapes in memory)
 region_gdf, REGION_EXTENT, region_outline, region_states_gdf = get_eastern_geodata()
 CONUS_EXTENT = [-127, -66, 24, 50]
+TARGET_PLOT_ASPECT = (REGION_EXTENT[1] - REGION_EXTENT[0]) / (REGION_EXTENT[3] - REGION_EXTENT[2])
 REGION_CONFIGS = {
     "northeast": {
         "label": "Northeast",
@@ -264,6 +265,29 @@ forecast_step_numbers = get_forecast_steps(most_recent_run_time.hour)
 def get_run_strings(run_time):
     return run_time.strftime("%Y%m%d"), run_time.strftime("%H")
 
+
+def expand_extent_to_aspect(extent, target_aspect):
+    min_lon, max_lon, min_lat, max_lat = extent
+    width = max_lon - min_lon
+    height = max_lat - min_lat
+    current_aspect = width / height
+
+    if abs(current_aspect - target_aspect) < 0.01:
+        return extent
+
+    if current_aspect > target_aspect:
+        target_height = width / target_aspect
+        extra_height = max(target_height - height, 0)
+        min_lat -= extra_height / 2
+        max_lat += extra_height / 2
+    else:
+        target_width = height * target_aspect
+        extra_width = max(target_width - width, 0)
+        min_lon -= extra_width / 2
+        max_lon += extra_width / 2
+
+    return [min_lon, max_lon, min_lat, max_lat]
+
 # Levels and colormaps
 mslp_levels = np.arange(960, 1050 + 2, 2)
 prate_levels = [value * 2 for value in [0.1, 0.25, 0.5, 0.75, 1.5, 2, 2.5, 3, 4, 6, 10, 16, 24]]
@@ -308,6 +332,7 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
     try:
         region_config = REGION_CONFIGS[region_name]
         extent = region_config["extent"]
+        plot_extent = expand_extent_to_aspect(extent, TARGET_PLOT_ASPECT) if region_name == "conus" else extent
 
         # Open datasets with dask chunking for lazy loading
         ds_mslp = xr.open_dataset(mslp_path, engine="cfgrib", chunks={})
@@ -411,7 +436,7 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
         fig = plt.figure(figsize=(13, 11), dpi=300, facecolor='white')
         fig.subplots_adjust(left=0.05, right=0.95, top=0.9, bottom=map_bottom)
         ax = plt.axes(projection=ccrs.PlateCarree(), facecolor='white')
-        ax.set_extent(extent, crs=ccrs.PlateCarree())
+        ax.set_extent(plot_extent, crs=ccrs.PlateCarree())
         ax.set_title(title, fontsize=11, fontweight='bold', pad=10)
 
         # Base map limited to NY: make anything outside appear white
@@ -584,9 +609,9 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
 
         margin_x = (extent[1] - extent[0]) * 0.01
         margin_y = (extent[3] - extent[2]) * 0.01
-        text_x = extent[1] - margin_x
-        text_y_base = extent[2] + margin_y
-        line_spacing = (extent[3] - extent[2]) * 0.025
+        text_x = plot_extent[1] - margin_x
+        text_y_base = plot_extent[2] + margin_y
+        line_spacing = (plot_extent[3] - plot_extent[2]) * 0.025
         ax.text(
             text_x, text_y_base + line_spacing, "Images by Jack Fordyce",
             fontsize=7, color="black", ha="right", va="bottom",
