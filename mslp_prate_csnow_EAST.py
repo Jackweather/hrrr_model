@@ -61,6 +61,19 @@ def get_eastern_geodata(padding_frac=0.05):
 
 # Acquire region geodata once (cache shapes in memory)
 region_gdf, REGION_EXTENT, region_outline, region_states_gdf = get_eastern_geodata()
+CONUS_EXTENT = [-127, -66, 24, 50]
+REGION_CONFIGS = {
+    "northeast": {
+        "label": "Northeast",
+        "title": "Northeast/Mid-Atlantic US",
+        "extent": REGION_EXTENT,
+    },
+    "conus": {
+        "label": "CONUS",
+        "title": "CONUS",
+        "extent": CONUS_EXTENT,
+    },
+}
 
 
 # Set base directory for HRRR output
@@ -74,7 +87,7 @@ grib_dir = os.path.join(RUN_ROOT_DIR, "grib")
 os.makedirs(grib_dir, exist_ok=True)
 os.makedirs(RUNS_DIR, exist_ok=True)
 
-png_dir = None
+png_dirs = {}
 processed_steps_file = None
 
 # HRRR URL and variables
@@ -121,22 +134,28 @@ def get_run_id(run_time):
 def prepare_run_output(run_time):
     run_id = get_run_id(run_time)
     run_dir = os.path.join(RUNS_DIR, run_id)
-    run_png_dir = os.path.join(run_dir, "png")
+    run_png_root_dir = os.path.join(run_dir, "png")
     run_processed_steps_file = os.path.join(run_dir, "processed_steps.txt")
 
-    if os.path.isdir(run_png_dir):
+    if os.path.isdir(run_png_root_dir):
         try:
-            shutil.rmtree(run_png_dir)
-            print(f"Removed existing png directory for run {run_id}: {run_png_dir}")
+            shutil.rmtree(run_png_root_dir)
+            print(f"Removed existing png directory for run {run_id}: {run_png_root_dir}")
         except Exception as e:
-            print(f"Failed to remove png directory {run_png_dir}: {e}")
+            print(f"Failed to remove png directory {run_png_root_dir}: {e}")
 
-    os.makedirs(run_png_dir, exist_ok=True)
+    os.makedirs(run_png_root_dir, exist_ok=True)
+
+    run_png_dirs = {}
+    for region_name in REGION_CONFIGS:
+        region_png_dir = os.path.join(run_png_root_dir, region_name)
+        os.makedirs(region_png_dir, exist_ok=True)
+        run_png_dirs[region_name] = region_png_dir
 
     if os.path.exists(run_processed_steps_file):
         os.remove(run_processed_steps_file)
 
-    return run_id, run_dir, run_png_dir, run_processed_steps_file
+    return run_id, run_dir, run_png_dirs, run_processed_steps_file
 
 
 def prune_old_runs(max_saved_runs, keep_run_id=None):
@@ -235,8 +254,9 @@ print(
     f"({format_eastern_time(most_recent_run_time)})"
 )
 
-current_run_id, current_run_dir, png_dir, processed_steps_file = prepare_run_output(most_recent_run_time)
-print(f"Writing PNG output for run {current_run_id} to {png_dir}")
+current_run_id, current_run_dir, png_dirs, processed_steps_file = prepare_run_output(most_recent_run_time)
+for region_name, region_png_dir in png_dirs.items():
+    print(f"Writing {region_name} PNG output for run {current_run_id} to {region_png_dir}")
 
 forecast_step_numbers = get_forecast_steps(most_recent_run_time.hour)
 
@@ -246,7 +266,7 @@ def get_run_strings(run_time):
 
 # Levels and colormaps
 mslp_levels = np.arange(960, 1050 + 2, 2)
-prate_levels = [0.1, 0.25, 0.5, 0.75, 1.5, 2, 2.5, 3, 4, 6, 10, 16, 24]
+prate_levels = [value * 2 for value in [0.1, 0.25, 0.5, 0.75, 1.5, 2, 2.5, 3, 4, 6, 10, 16, 24]]
 prate_colors = [
     "#b6ffb6", "#54f354", "#19a319", "#016601", "#c9c938", "#f5f825",
     "#ffd700", "#ffa500", "#ff7f50", "#ff4500", "#ff1493", "#9400d3"
@@ -284,8 +304,11 @@ def get_hrrr_grib(run_time, step, variable):
     return download_grib(url, file_path)
 
 # --- Plotting function (uses adjusted NY extent) ---
-def plot_combined(mslp_path, prate_path, step, run_time, csnow_path=None, cfrzr_path=None, cicep_path=None):
+def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path=None, cfrzr_path=None, cicep_path=None):
     try:
+        region_config = REGION_CONFIGS[region_name]
+        extent = region_config["extent"]
+
         # Open datasets with dask chunking for lazy loading
         ds_mslp = xr.open_dataset(mslp_path, engine="cfgrib", chunks={})
         ds_prate = xr.open_dataset(prate_path, engine="cfgrib", chunks={})
@@ -377,16 +400,18 @@ def plot_combined(mslp_path, prate_path, step, run_time, csnow_path=None, cfrzr_
 
 
         title = (
-            f"HRRR Precipitation Rate & Mean Sea Level Pressure — Northeast/Mid-Atlantic US\n"
+            f"HRRR Precipitation Rate & Mean Sea Level Pressure — {region_config['title']}\n"
             f"Valid: {valid_time.strftime('%Y-%m-%d %HZ')} ({day_of_week}, {local_time})  "
             f"Run: {hour_str}Z  Forecast Hour: {step}"
         )
 
         # --- Plotting setup (use expanded region extent) ---
+        colorbar_band_bottom = 0.035
+        map_bottom = 0.12 if region_name == "northeast" else 0.08
         fig = plt.figure(figsize=(13, 11), dpi=300, facecolor='white')
-        fig.subplots_adjust(left=0.05, right=0.95, top=0.9, bottom=0.16)
+        fig.subplots_adjust(left=0.05, right=0.95, top=0.9, bottom=map_bottom)
         ax = plt.axes(projection=ccrs.PlateCarree(), facecolor='white')
-        ax.set_extent(REGION_EXTENT, crs=ccrs.PlateCarree())
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
         ax.set_title(title, fontsize=11, fontweight='bold', pad=10)
 
         # Base map limited to NY: make anything outside appear white
@@ -410,14 +435,14 @@ def plot_combined(mslp_path, prate_path, step, run_time, csnow_path=None, cfrzr_
 
         # CFRZR, CICEP, CSNOW plotting (if present)
         if cfrzr_rate2d is not None:
-            cfrzr_levels = [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]
+            cfrzr_levels = [value * 2 for value in [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]]
             cfrzr_colors = ["#fce4ec", "#f8bbd0", "#f48fb1", "#ec407a", "#d81b60", "#880e4f", "#560027"]
             cfrzr_cmap = LinearSegmentedColormap.from_list("cfrzr_cbar", cfrzr_colors, N=len(cfrzr_colors))
             cfrzr_norm = BoundaryNorm(cfrzr_levels, cfrzr_cmap.N)
             cfrzr_mesh = ax.contourf(Lon2d, Lat2d, cfrzr_rate2d, levels=cfrzr_levels, cmap=cfrzr_cmap, norm=cfrzr_norm, extend='max', transform=ccrs.PlateCarree(), alpha=0.85, zorder=3)
 
         if cicep_rate2d is not None:
-            cicep_levels = [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]
+            cicep_levels = [value * 2 for value in [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]]
             cicep_colors = ["#f3e5f5", "#e1bee7", "#ce93d8", "#ba68c8", "#9c27b0", "#7b1fa2", "#4a148c", "#12005e"]
             cicep_cmap = LinearSegmentedColormap.from_list("cicep_cbar", cicep_colors, N=len(cicep_colors))
             cicep_norm = BoundaryNorm(cicep_levels, cicep_cmap.N)
@@ -429,14 +454,18 @@ def plot_combined(mslp_path, prate_path, step, run_time, csnow_path=None, cfrzr_
 
         # Snow plotting
         if snow_rate2d is not None:
-            snow_levels = [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]
+            snow_levels = [value * 2 for value in [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]]
             snow_colors = ["#e3f2fd", "#bbdefb", "#90caf9", "#42a5f5", "#1e88e5", "#1565c0", "#0d47a1", "#002171"]
             snow_cmap = LinearSegmentedColormap.from_list("snow_cbar", snow_colors, N=len(snow_colors))
             snow_norm = BoundaryNorm(snow_levels, snow_cmap.N)
             snow_mesh = ax.contourf(Lon2d, Lat2d, snow_rate2d, levels=snow_levels, cmap=snow_cmap, norm=snow_norm, extend='max', transform=ccrs.PlateCarree(), alpha=0.85, zorder=3)
 
-        # Colorbars placement — create four identical smaller axes at bottom; leave blank if mesh missing
-        cbar_y = 0.055
+        plt.draw()
+        if region_name == "northeast":
+            cbar_y = colorbar_band_bottom
+        else:
+            map_position = ax.get_position()
+            cbar_y = max(map_position.y0 - 0.045, colorbar_band_bottom)
         cbar_h = 0.02   # smaller height
         cbar_w = 0.21   # width chosen so 4 bars + gaps fit within [0.05,0.95]
         gap = 0.02
@@ -502,7 +531,6 @@ def plot_combined(mslp_path, prate_path, step, run_time, csnow_path=None, cfrzr_
 
 
         # Detect highs and lows limited to region extent
-        extent = REGION_EXTENT
         mask = (
             (Lon2d >= extent[0]) & (Lon2d <= extent[1]) &
             (Lat2d >= extent[2]) & (Lat2d <= extent[3])
@@ -544,17 +572,21 @@ def plot_combined(mslp_path, prate_path, step, run_time, csnow_path=None, cfrzr_
 
         # Overlay region counties and state outlines
         try:
-            region_gdf.plot(ax=ax, facecolor="none", edgecolor="gray", linewidth=0.3, zorder=7)
-            region_states_gdf.boundary.plot(ax=ax, edgecolor="#000000", linewidth=1.0, zorder=8)
+            if region_name == "northeast":
+                region_gdf.plot(ax=ax, facecolor="none", edgecolor="gray", linewidth=0.3, zorder=7)
+                region_states_gdf.boundary.plot(ax=ax, edgecolor="#000000", linewidth=1.0, zorder=8)
+            else:
+                ax.add_feature(cfeature.BORDERS, linewidth=0.5, edgecolor="#444444", zorder=7)
+                ax.add_feature(cfeature.STATES, linewidth=0.35, edgecolor="#666666", zorder=8)
         except Exception as e:
             print(f"Error plotting overlays: {e}")
 
 
-        margin_x = (REGION_EXTENT[1] - REGION_EXTENT[0]) * 0.01
-        margin_y = (REGION_EXTENT[3] - REGION_EXTENT[2]) * 0.01
-        text_x = REGION_EXTENT[1] - margin_x
-        text_y_base = REGION_EXTENT[2] + margin_y
-        line_spacing = (REGION_EXTENT[3] - REGION_EXTENT[2]) * 0.025
+        margin_x = (extent[1] - extent[0]) * 0.01
+        margin_y = (extent[3] - extent[2]) * 0.01
+        text_x = extent[1] - margin_x
+        text_y_base = extent[2] + margin_y
+        line_spacing = (extent[3] - extent[2]) * 0.025
         ax.text(
             text_x, text_y_base + line_spacing, "Images by Jack Fordyce",
             fontsize=7, color="black", ha="right", va="bottom",
@@ -573,7 +605,7 @@ def plot_combined(mslp_path, prate_path, step, run_time, csnow_path=None, cfrzr_
         )
 
         # Save PNG
-        png_path = os.path.join(png_dir, f"hrrr_combined_EAST_{step:02d}.png")
+        png_path = os.path.join(png_dirs[region_name], f"hrrr_combined_{region_name}_{step:02d}.png")
         plt.savefig(png_path, bbox_inches="tight", dpi=300)
         plt.close(fig)
         ds_mslp.close()
@@ -607,7 +639,8 @@ for step_group in forecast_steps:
         cicep_grib = get_hrrr_grib(most_recent_run_time, step, "CICEP")
 
         if mslp_grib and prate_grib:
-            plot_combined(mslp_grib, prate_grib, step, most_recent_run_time, csnow_grib, cfrzr_grib, cicep_grib)
+            for region_name in REGION_CONFIGS:
+                plot_combined(mslp_grib, prate_grib, step, most_recent_run_time, region_name, csnow_grib, cfrzr_grib, cicep_grib)
         else:
             print(
                 f"Skipping forecast hour {step:02d} for run {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
