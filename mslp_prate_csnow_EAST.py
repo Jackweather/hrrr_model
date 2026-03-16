@@ -24,8 +24,8 @@ import shutil
 EASTERN_TZ = ZoneInfo("America/New_York")
 
 
-# --- Utility to fetch expanded region geojson and compute extent/boundary ---
-def get_eastern_geodata(padding_frac=0.05):
+# --- Utility to fetch regional county/state geodata and compute extent/boundary ---
+def get_region_geodata(state_names, region_fips, padding_frac=0.05):
     url = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
     r = requests.get(url)
     r.raise_for_status()
@@ -39,8 +39,6 @@ def get_eastern_geodata(padding_frac=0.05):
     gdf = gdf.set_crs("EPSG:4326")
     gdf["fips"] = gdf["fips"].astype(str)
 
-    # FIPS state codes for Northeast + Mid-Atlantic + OH/VA
-    region_fips = ["23", "33", "50", "25", "44", "09", "36", "34", "42", "39", "51", "24", "10", "11", "54"]
     counties = gdf[gdf["fips"].str[:2].isin(region_fips)]
     if counties.empty:
         raise RuntimeError("No region counties found in GeoJSON.")
@@ -49,18 +47,32 @@ def get_eastern_geodata(padding_frac=0.05):
     pad_y = (maxy - miny) * padding_frac
     extent = [minx - pad_x, maxx + pad_x, miny - pad_y, maxy + pad_y]
 
-    state_names = [
-        "Maine", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut",
-        "New York", "New Jersey", "Pennsylvania", "Ohio", "Virginia", "Maryland", "Delaware", "District of Columbia", "West Virginia"
-    ]
     census_states_url = "https://eric.clst.org/assets/wiki/uploads/Stuff/gz_2010_us_040_00_500k.json"
     states_census_gdf = gpd.read_file(census_states_url)
     states_census_gdf = states_census_gdf[states_census_gdf["NAME"].isin(state_names)]
     state_outline = states_census_gdf.unary_union
     return counties, extent, state_outline, states_census_gdf
 
+NORTHEAST_STATE_NAMES = [
+    "Maine", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island", "Connecticut",
+    "New York", "New Jersey", "Pennsylvania", "Ohio", "Virginia", "Maryland", "Delaware", "District of Columbia", "West Virginia"
+]
+NORTHEAST_STATE_FIPS = ["23", "33", "50", "25", "44", "09", "36", "34", "42", "39", "51", "24", "10", "11", "54"]
+SOUTHEAST_STATE_NAMES = [
+    "Virginia", "Kentucky", "Tennessee", "North Carolina", "South Carolina",
+    "Georgia", "Florida", "Alabama", "Mississippi"
+]
+SOUTHEAST_STATE_FIPS = ["51", "21", "47", "37", "45", "13", "12", "01", "28"]
+
 # Acquire region geodata once (cache shapes in memory)
-region_gdf, REGION_EXTENT, region_outline, region_states_gdf = get_eastern_geodata()
+region_gdf, REGION_EXTENT, region_outline, region_states_gdf = get_region_geodata(
+    NORTHEAST_STATE_NAMES,
+    NORTHEAST_STATE_FIPS,
+)
+southeast_gdf, SOUTHEAST_EXTENT, southeast_outline, southeast_states_gdf = get_region_geodata(
+    SOUTHEAST_STATE_NAMES,
+    SOUTHEAST_STATE_FIPS,
+)
 CONUS_EXTENT = [-127, -66, 24, 50]
 TARGET_PLOT_ASPECT = (REGION_EXTENT[1] - REGION_EXTENT[0]) / (REGION_EXTENT[3] - REGION_EXTENT[2])
 REGION_CONFIGS = {
@@ -68,6 +80,15 @@ REGION_CONFIGS = {
         "label": "Northeast",
         "title": "Northeast/Mid-Atlantic US",
         "extent": REGION_EXTENT,
+        "counties_gdf": region_gdf,
+        "states_gdf": region_states_gdf,
+    },
+    "southeast": {
+        "label": "Southeast",
+        "title": "Southeast US",
+        "extent": SOUTHEAST_EXTENT,
+        "counties_gdf": southeast_gdf,
+        "states_gdf": southeast_states_gdf,
     },
     "conus": {
         "label": "CONUS",
@@ -290,7 +311,7 @@ def expand_extent_to_aspect(extent, target_aspect):
 
 # Levels and colormaps
 mslp_levels = np.arange(960, 1050 + 2, 2)
-prate_levels = [value * 2 for value in [0.1, 0.25, 0.5, 0.75, 1.5, 2, 2.5, 3, 4, 6, 10, 16, 24]]
+prate_levels = [value * 5 for value in [0.1, 0.25, 0.5, 0.75, 1.5, 2, 2.5, 3, 4, 6, 10, 16, 24]]
 prate_colors = [
     "#b6ffb6", "#54f354", "#19a319", "#016601", "#c9c938", "#f5f825",
     "#ffd700", "#ffa500", "#ff7f50", "#ff4500", "#ff1493", "#9400d3"
@@ -460,14 +481,14 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
 
         # CFRZR, CICEP, CSNOW plotting (if present)
         if cfrzr_rate2d is not None:
-            cfrzr_levels = [value * 2 for value in [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]]
+            cfrzr_levels = [value * 3 for value in [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]]
             cfrzr_colors = ["#fce4ec", "#f8bbd0", "#f48fb1", "#ec407a", "#d81b60", "#880e4f", "#560027"]
             cfrzr_cmap = LinearSegmentedColormap.from_list("cfrzr_cbar", cfrzr_colors, N=len(cfrzr_colors))
             cfrzr_norm = BoundaryNorm(cfrzr_levels, cfrzr_cmap.N)
             cfrzr_mesh = ax.contourf(Lon2d, Lat2d, cfrzr_rate2d, levels=cfrzr_levels, cmap=cfrzr_cmap, norm=cfrzr_norm, extend='max', transform=ccrs.PlateCarree(), alpha=0.85, zorder=3)
 
         if cicep_rate2d is not None:
-            cicep_levels = [value * 2 for value in [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]]
+            cicep_levels = [value * 3 for value in [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]]
             cicep_colors = ["#f3e5f5", "#e1bee7", "#ce93d8", "#ba68c8", "#9c27b0", "#7b1fa2", "#4a148c", "#12005e"]
             cicep_cmap = LinearSegmentedColormap.from_list("cicep_cbar", cicep_colors, N=len(cicep_colors))
             cicep_norm = BoundaryNorm(cicep_levels, cicep_cmap.N)
@@ -479,7 +500,7 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
 
         # Snow plotting
         if snow_rate2d is not None:
-            snow_levels = [value * 2 for value in [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]]
+            snow_levels = [value * 3 for value in [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]]
             snow_colors = ["#e3f2fd", "#bbdefb", "#90caf9", "#42a5f5", "#1e88e5", "#1565c0", "#0d47a1", "#002171"]
             snow_cmap = LinearSegmentedColormap.from_list("snow_cbar", snow_colors, N=len(snow_colors))
             snow_norm = BoundaryNorm(snow_levels, snow_cmap.N)
@@ -562,14 +583,23 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
         )
         data_masked = np.where(mask, mslp2d, np.nan)
 
-        def find_valid_extrema(extrema_y, extrema_x, values, margin, is_high=True):
+        def find_valid_extrema(extrema_y, extrema_x, values, lon_margin, lat_margin, bounds, is_high=True):
             sorted_indices = np.argsort(values)[::-1] if is_high else np.argsort(values)
             for idx in sorted_indices:
                 y, x = extrema_y[idx], extrema_x[idx]
                 lon, lat = Lon2d[y, x], Lat2d[y, x]
-                if (extent[0] + margin <= lon <= extent[1] - margin) and (extent[2] + margin <= lat <= extent[3] - margin):
+                if (
+                    bounds[0] + lon_margin <= lon <= bounds[1] - lon_margin
+                    and bounds[2] + lat_margin <= lat <= bounds[3] - lat_margin
+                ):
                     return lon, lat, values[idx]
             return None, None, None
+
+        extent_width = extent[1] - extent[0]
+        extent_height = extent[3] - extent[2]
+        extrema_bounds = plot_extent if region_name == "conus" else extent
+        extrema_lon_margin = max(extent_width * (0.04 if region_name == "conus" else 0.01), 0.1)
+        extrema_lat_margin = max(extent_height * (0.05 if region_name == "conus" else 0.01), 0.1)
 
         # Plot one low if <= 1005 hPa
         min_filt = ndimage.minimum_filter(data_masked, size=25, mode='constant', cval=np.nan)
@@ -577,7 +607,15 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
         low_y, low_x = np.where(lows)
         low_values = data_masked[low_y, low_x]
 
-        low_lon, low_lat, low_value = find_valid_extrema(low_y, low_x, low_values, margin=0.1, is_high=False)
+        low_lon, low_lat, low_value = find_valid_extrema(
+            low_y,
+            low_x,
+            low_values,
+            lon_margin=extrema_lon_margin,
+            lat_margin=extrema_lat_margin,
+            bounds=extrema_bounds,
+            is_high=False,
+        )
         if low_lon is not None and low_value <= 1005:  # Only plot if <= 1005 hPa
             ax.text(low_lon, low_lat, "L", color='red', fontsize=12, fontweight='bold', ha='center', va='center', transform=ccrs.PlateCarree(), zorder=6, path_effects=[patheffects.Stroke(linewidth=1, foreground='white'), patheffects.Normal()])
             ax.text(low_lon, low_lat - 0.2, f"{low_value:.0f}", color='red', fontsize=6, fontweight='bold', ha='center', va='top', transform=ccrs.PlateCarree(), zorder=6)
@@ -588,7 +626,15 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
         high_y, high_x = np.where(highs)
         high_values = data_masked[high_y, high_x]
 
-        high_lon, high_lat, high_value = find_valid_extrema(high_y, high_x, high_values, margin=0.1, is_high=True)
+        high_lon, high_lat, high_value = find_valid_extrema(
+            high_y,
+            high_x,
+            high_values,
+            lon_margin=extrema_lon_margin,
+            lat_margin=extrema_lat_margin,
+            bounds=extrema_bounds,
+            is_high=True,
+        )
         if high_lon is not None and high_value > 1029:  # Only plot if > 1029 hPa
             ax.text(high_lon, high_lat, "H", color='blue', fontsize=12, fontweight='bold', ha='center', va='center', transform=ccrs.PlateCarree(), zorder=6, path_effects=[patheffects.Stroke(linewidth=1, foreground='white'), patheffects.Normal()])
             ax.text(high_lon, high_lat - 0.2, f"{high_value:.0f}", color='blue', fontsize=6, fontweight='bold', ha='center', va='top', transform=ccrs.PlateCarree(), zorder=6)
@@ -597,9 +643,11 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
 
         # Overlay region counties and state outlines
         try:
-            if region_name == "northeast":
-                region_gdf.plot(ax=ax, facecolor="none", edgecolor="gray", linewidth=0.3, zorder=7)
-                region_states_gdf.boundary.plot(ax=ax, edgecolor="#000000", linewidth=1.0, zorder=8)
+            counties_gdf = region_config.get("counties_gdf")
+            states_gdf = region_config.get("states_gdf")
+            if counties_gdf is not None and states_gdf is not None:
+                counties_gdf.plot(ax=ax, facecolor="none", edgecolor="gray", linewidth=0.3, zorder=7)
+                states_gdf.boundary.plot(ax=ax, edgecolor="#000000", linewidth=1.0, zorder=8)
             else:
                 ax.add_feature(cfeature.BORDERS, linewidth=0.5, edgecolor="#444444", zorder=7)
                 ax.add_feature(cfeature.STATES, linewidth=0.35, edgecolor="#666666", zorder=8)
