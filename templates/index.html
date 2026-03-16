@@ -350,6 +350,7 @@
         const regionSelect = document.getElementById("regionSelect");
         const runSelect = document.getElementById("runSelect");
         const runStatus = document.getElementById("runStatus");
+        const imagePreloadCache = new Map();
         let currentIndex = 0;
         let activeLoadToken = 0;
         let hasCompletedInitialLoad = false;
@@ -453,8 +454,46 @@
             loadingScreen.classList.add("is-hidden");
         }
 
+        function preloadSingleImage(url) {
+            if (!url) {
+                return Promise.resolve(false);
+            }
+
+            if (imagePreloadCache.has(url)) {
+                return imagePreloadCache.get(url);
+            }
+
+            const preloadPromise = new Promise(resolve => {
+                const preloadedImage = new Image();
+
+                function finalize() {
+                    resolve(true);
+                }
+
+                preloadedImage.onload = finalize;
+                preloadedImage.onerror = finalize;
+                preloadedImage.src = url;
+            });
+
+            imagePreloadCache.set(url, preloadPromise);
+            return preloadPromise;
+        }
+
+        function getPreferredFrameIndex(imageSet, preferredFilename) {
+            if (!imageSet.length) {
+                return 0;
+            }
+
+            const matchingIndex = imageSet.findIndex(item => item.filename === preferredFilename);
+            if (matchingIndex >= 0) {
+                return matchingIndex;
+            }
+
+            return Math.min(currentIndex, imageSet.length - 1);
+        }
+
         async function preloadImageSet(imageSet, title, copy, options = {}) {
-            const { showOverlay = true } = options;
+            const { showOverlay = true, priorityIndex = 0, waitForFullSet = false } = options;
             const loadToken = ++activeLoadToken;
 
             if (!imageSet.length) {
@@ -468,31 +507,47 @@
                 showLoading(title, copy, 0, imageSet.length);
             }
 
+            const resolvedPriorityIndex = Math.max(0, Math.min(priorityIndex, imageSet.length - 1));
             let loadedCount = 0;
-            const results = await Promise.all(imageSet.map(item => new Promise(resolve => {
-                const preloadedImage = new Image();
-
-                function finalize() {
-                    loadedCount += 1;
-                    if (showOverlay && loadToken === activeLoadToken) {
-                        setLoadingProgress(loadedCount, imageSet.length);
-                    }
-                    resolve(item);
+            const updateProgress = () => {
+                if (showOverlay && loadToken === activeLoadToken) {
+                    setLoadingProgress(loadedCount, imageSet.length);
                 }
+            };
 
-                preloadedImage.onload = finalize;
-                preloadedImage.onerror = finalize;
-                preloadedImage.src = item.url;
-            })));
+            await preloadSingleImage(imageSet[resolvedPriorityIndex]?.url);
+            loadedCount += 1;
+            updateProgress();
 
             if (loadToken !== activeLoadToken) {
                 return null;
             }
 
-            if (showOverlay) {
+            if (!waitForFullSet && showOverlay) {
                 hideLoading();
             }
-            return results;
+
+            const backgroundImages = imageSet.filter((_, index) => index !== resolvedPriorityIndex);
+            const backgroundLoad = Promise.all(backgroundImages.map(async item => {
+                await preloadSingleImage(item.url);
+                loadedCount += 1;
+                updateProgress();
+                return item;
+            }));
+
+            if (waitForFullSet) {
+                await backgroundLoad;
+
+                if (loadToken !== activeLoadToken) {
+                    return null;
+                }
+
+                if (showOverlay) {
+                    hideLoading();
+                }
+            }
+
+            return imageSet;
         }
 
         function renderImageState(hasImages) {
@@ -555,11 +610,13 @@
                 const nextRunId = payload.run_id ?? runId;
                 const nextRegionId = payload.region_id ?? regionId;
                 const nextImages = payload.images ?? [];
+                const currentFilename = images[currentIndex]?.filename;
+                const priorityIndex = getPreferredFrameIndex(nextImages, currentFilename);
                 const preloadedImages = await preloadImageSet(
                     nextImages,
                     "Loading run archive",
-                    "Preparing the selected run before the viewer updates.",
-                    { showOverlay }
+                    "Showing the first frame, then loading the remaining PNGs in the background.",
+                    { showOverlay, priorityIndex }
                 );
                 if (preloadedImages === null) {
                     return;
@@ -593,11 +650,13 @@
                     return;
                 }
 
+                const currentFilename = images[currentIndex]?.filename;
+                const priorityIndex = getPreferredFrameIndex(nextImages, currentFilename);
                 const preloadedImages = await preloadImageSet(
                     nextImages,
                     "Refreshing forecast frames",
-                    "Loading the latest PNG set before the viewer updates.",
-                    { showOverlay: !hasCompletedInitialLoad }
+                    "Showing the first updated frame, then loading the remaining PNGs in the background.",
+                    { showOverlay: !hasCompletedInitialLoad, priorityIndex }
                 );
                 if (preloadedImages === null) {
                     return;
@@ -652,7 +711,7 @@
         runSelect?.addEventListener("change", event => {
             const requestedRunId = event.target.value;
             followingLatestRun = requestedRunId === getLatestRunId();
-            loadRun(requestedRunId);
+            loadRun(requestedRunId, { showOverlay: true });
         });
 
         regionSelect?.addEventListener("change", event => {
@@ -661,7 +720,7 @@
                 return;
             }
 
-            loadRun(selectedRunId ?? getLatestRunId(), { regionId: requestedRegionId, showOverlay: false });
+            loadRun(selectedRunId ?? getLatestRunId(), { regionId: requestedRegionId, showOverlay: true });
         });
 
         document.addEventListener("keydown", event => {
@@ -678,7 +737,8 @@
             preloadImageSet(
                 images,
                 "Loading forecast frames",
-                "Preparing every PNG before the first frame is shown."
+                "Showing the first frame, then loading the remaining PNGs in the background.",
+                { waitForFullSet: false }
             ).then(preloadedImages => {
                 if (!preloadedImages) {
                     return;
