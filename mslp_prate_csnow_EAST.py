@@ -2,6 +2,7 @@ import os
 import re
 import requests
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 import xarray as xr
 import matplotlib
@@ -25,11 +26,12 @@ EASTERN_TZ = ZoneInfo("America/New_York")
 
 
 # --- Utility to fetch regional county/state geodata and compute extent/boundary ---
-def get_region_geodata(state_names, region_fips, padding_frac=0.05):
+@lru_cache(maxsize=1)
+def get_county_geodataframe():
     url = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
-    r = requests.get(url)
-    r.raise_for_status()
-    geojson = r.json()
+    response = requests.get(url)
+    response.raise_for_status()
+    geojson = response.json()
 
     for feat in geojson.get("features", []):
         feat.setdefault("properties", {})
@@ -38,7 +40,17 @@ def get_region_geodata(state_names, region_fips, padding_frac=0.05):
     gdf = gpd.GeoDataFrame.from_features(geojson["features"])
     gdf = gdf.set_crs("EPSG:4326")
     gdf["fips"] = gdf["fips"].astype(str)
+    return gdf
 
+
+@lru_cache(maxsize=1)
+def get_census_states_geodataframe():
+    census_states_url = "https://eric.clst.org/assets/wiki/uploads/Stuff/gz_2010_us_040_00_500k.json"
+    return gpd.read_file(census_states_url)
+
+
+def get_region_geodata(state_names, region_fips, padding_frac=0.05):
+    gdf = get_county_geodataframe()
     counties = gdf[gdf["fips"].str[:2].isin(region_fips)]
     if counties.empty:
         raise RuntimeError("No region counties found in GeoJSON.")
@@ -47,8 +59,7 @@ def get_region_geodata(state_names, region_fips, padding_frac=0.05):
     pad_y = (maxy - miny) * padding_frac
     extent = [minx - pad_x, maxx + pad_x, miny - pad_y, maxy + pad_y]
 
-    census_states_url = "https://eric.clst.org/assets/wiki/uploads/Stuff/gz_2010_us_040_00_500k.json"
-    states_census_gdf = gpd.read_file(census_states_url)
+    states_census_gdf = get_census_states_geodataframe()
     states_census_gdf = states_census_gdf[states_census_gdf["NAME"].isin(state_names)]
     state_outline = states_census_gdf.unary_union
     return counties, extent, state_outline, states_census_gdf
@@ -63,15 +74,41 @@ SOUTHEAST_STATE_NAMES = [
     "Georgia", "Florida", "Alabama", "Mississippi"
 ]
 SOUTHEAST_STATE_FIPS = ["51", "21", "47", "37", "45", "13", "12", "01", "28"]
+SOUTH_CENTRAL_STATE_NAMES = [
+    "Texas", "Oklahoma", "Arkansas", "Louisiana", "New Mexico"
+]
+SOUTH_CENTRAL_STATE_FIPS = ["48", "40", "05", "22", "35"]
+NORTH_CENTRAL_STATE_NAMES = [
+    "North Dakota", "South Dakota", "Nebraska", "Kansas", "Minnesota",
+    "Iowa", "Missouri", "Wisconsin", "Illinois", "Michigan"
+]
+NORTH_CENTRAL_STATE_FIPS = ["38", "46", "31", "20", "27", "19", "29", "55", "17", "26"]
+WESTERN_STATE_NAMES = [
+    "Washington", "Oregon", "California", "Nevada", "Idaho",
+    "Montana", "Wyoming", "Utah", "Colorado", "Arizona"
+]
+WESTERN_STATE_FIPS = ["53", "41", "06", "32", "16", "30", "56", "49", "08", "04"]
 
 # Acquire region geodata once (cache shapes in memory)
-region_gdf, REGION_EXTENT, region_outline, region_states_gdf = get_region_geodata(
+northeast_gdf, REGION_EXTENT, northeast_outline, northeast_states_gdf = get_region_geodata(
     NORTHEAST_STATE_NAMES,
     NORTHEAST_STATE_FIPS,
 )
 southeast_gdf, SOUTHEAST_EXTENT, southeast_outline, southeast_states_gdf = get_region_geodata(
     SOUTHEAST_STATE_NAMES,
     SOUTHEAST_STATE_FIPS,
+)
+south_central_gdf, SOUTH_CENTRAL_EXTENT, south_central_outline, south_central_states_gdf = get_region_geodata(
+    SOUTH_CENTRAL_STATE_NAMES,
+    SOUTH_CENTRAL_STATE_FIPS,
+)
+north_central_gdf, NORTH_CENTRAL_EXTENT, north_central_outline, north_central_states_gdf = get_region_geodata(
+    NORTH_CENTRAL_STATE_NAMES,
+    NORTH_CENTRAL_STATE_FIPS,
+)
+western_gdf, WESTERN_EXTENT, western_outline, western_states_gdf = get_region_geodata(
+    WESTERN_STATE_NAMES,
+    WESTERN_STATE_FIPS,
 )
 CONUS_EXTENT = [-127, -66, 24, 50]
 TARGET_PLOT_ASPECT = (REGION_EXTENT[1] - REGION_EXTENT[0]) / (REGION_EXTENT[3] - REGION_EXTENT[2])
@@ -80,8 +117,8 @@ REGION_CONFIGS = {
         "label": "Northeast",
         "title": "Northeast/Mid-Atlantic US",
         "extent": REGION_EXTENT,
-        "counties_gdf": region_gdf,
-        "states_gdf": region_states_gdf,
+        "counties_gdf": northeast_gdf,
+        "states_gdf": northeast_states_gdf,
     },
     "southeast": {
         "label": "Southeast",
@@ -89,6 +126,27 @@ REGION_CONFIGS = {
         "extent": SOUTHEAST_EXTENT,
         "counties_gdf": southeast_gdf,
         "states_gdf": southeast_states_gdf,
+    },
+    "south_central": {
+        "label": "South Central",
+        "title": "South Central US",
+        "extent": SOUTH_CENTRAL_EXTENT,
+        "counties_gdf": south_central_gdf,
+        "states_gdf": south_central_states_gdf,
+    },
+    "north_central": {
+        "label": "North Central",
+        "title": "North Central US",
+        "extent": NORTH_CENTRAL_EXTENT,
+        "counties_gdf": north_central_gdf,
+        "states_gdf": north_central_states_gdf,
+    },
+    "western": {
+        "label": "Western",
+        "title": "Western US",
+        "extent": WESTERN_EXTENT,
+        "counties_gdf": western_gdf,
+        "states_gdf": western_states_gdf,
     },
     "conus": {
         "label": "CONUS",
@@ -453,7 +511,7 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
 
         # --- Plotting setup (use expanded region extent) ---
         colorbar_band_bottom = 0.035
-        map_bottom = 0.12 if region_name == "northeast" else 0.08
+        map_bottom = 0.12 if region_name != "conus" else 0.08
         fig = plt.figure(figsize=(13, 11), dpi=300, facecolor='white')
         fig.subplots_adjust(left=0.05, right=0.95, top=0.9, bottom=map_bottom)
         ax = plt.axes(projection=ccrs.PlateCarree(), facecolor='white')
@@ -507,7 +565,7 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
             snow_mesh = ax.contourf(Lon2d, Lat2d, snow_rate2d, levels=snow_levels, cmap=snow_cmap, norm=snow_norm, extend='max', transform=ccrs.PlateCarree(), alpha=0.85, zorder=3)
 
         plt.draw()
-        if region_name == "northeast":
+        if region_name != "conus":
             cbar_y = colorbar_band_bottom
         else:
             map_position = ax.get_position()
