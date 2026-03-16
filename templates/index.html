@@ -368,6 +368,40 @@
             return availableRegions.find(region => region.id === regionId)?.label ?? "Northeast";
         }
 
+        function getRunIdFromImageUrl(url) {
+            if (!url) {
+                return null;
+            }
+
+            try {
+                const parsedUrl = new URL(url, window.location.origin);
+                const pathSegments = parsedUrl.pathname.split("/").filter(Boolean);
+                if (pathSegments[0] !== "images" || pathSegments.length < 3) {
+                    return null;
+                }
+
+                return pathSegments[1] ?? null;
+            } catch {
+                return null;
+            }
+        }
+
+        function pruneImagePreloadCache() {
+            const validRunIds = new Set(availableRuns.map(run => run.id));
+            if (selectedRunId) {
+                validRunIds.add(selectedRunId);
+            }
+
+            for (const cachedUrl of imagePreloadCache.keys()) {
+                const cachedRunId = getRunIdFromImageUrl(cachedUrl);
+                if (!cachedRunId || validRunIds.has(cachedRunId)) {
+                    continue;
+                }
+
+                imagePreloadCache.delete(cachedUrl);
+            }
+        }
+
         function syncRegionSelect() {
             if (!regionSelect) {
                 return;
@@ -422,6 +456,8 @@
             if (selectedRunId) {
                 runSelect.value = selectedRunId;
             }
+
+            pruneImagePreloadCache();
         }
 
         function updateRunStatus() {
@@ -595,6 +631,7 @@
             const nextIndex = matchingIndex >= 0 ? matchingIndex : Math.min(currentIndex, images.length - 1);
             updateFrame(nextIndex);
             updateRunStatus();
+            pruneImagePreloadCache();
         }
 
         async function loadRun(runId, options = {}) {
