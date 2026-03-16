@@ -353,6 +353,9 @@
         const imagePreloadCache = new Map();
         let currentIndex = 0;
         let activeLoadToken = 0;
+        let activeFrameRequestToken = 0;
+        let queuedSliderIndex = null;
+        let sliderAnimationFrameId = 0;
         let hasCompletedInitialLoad = false;
         let followingLatestRun = true;
 
@@ -591,6 +594,13 @@
             emptyState.classList.toggle("is-hidden", hasImages);
         }
 
+        function warmNearbyFrames(index, radius = 2) {
+            for (let offset = 1; offset <= radius; offset += 1) {
+                preloadSingleImage(images[index - offset]?.url);
+                preloadSingleImage(images[index + offset]?.url);
+            }
+        }
+
         function updateFrame(index) {
             if (!images.length || !image) {
                 renderImageState(false);
@@ -604,6 +614,42 @@
             positionText.textContent = `${index + 1} / ${images.length}`;
             slider.value = index;
             currentIndex = index;
+        }
+
+        async function requestFrame(index) {
+            if (!images.length || !image) {
+                renderImageState(false);
+                return;
+            }
+
+            const boundedIndex = Math.max(0, Math.min(index, images.length - 1));
+            const item = images[boundedIndex];
+            const frameRequestToken = ++activeFrameRequestToken;
+
+            slider.value = boundedIndex;
+            positionText.textContent = `${boundedIndex + 1} / ${images.length}`;
+
+            await preloadSingleImage(item.url);
+            if (frameRequestToken !== activeFrameRequestToken) {
+                return;
+            }
+
+            updateFrame(boundedIndex);
+            warmNearbyFrames(boundedIndex);
+        }
+
+        function queueFrameRequest(index) {
+            queuedSliderIndex = index;
+            if (sliderAnimationFrameId) {
+                return;
+            }
+
+            sliderAnimationFrameId = window.requestAnimationFrame(() => {
+                sliderAnimationFrameId = 0;
+                const nextIndex = queuedSliderIndex;
+                queuedSliderIndex = null;
+                requestFrame(Number(nextIndex));
+            });
         }
 
         function syncSlider() {
@@ -742,7 +788,11 @@
         updateRunStatus();
 
         slider.addEventListener("input", event => {
-            updateFrame(Number(event.target.value));
+            queueFrameRequest(Number(event.target.value));
+        });
+
+        slider.addEventListener("change", event => {
+            queueFrameRequest(Number(event.target.value));
         });
 
         runSelect?.addEventListener("change", event => {
@@ -762,10 +812,10 @@
 
         document.addEventListener("keydown", event => {
             if (event.key === "ArrowLeft") {
-                updateFrame(Math.max(Number(slider.value) - 1, 0));
+                queueFrameRequest(Math.max(Number(slider.value) - 1, 0));
             }
             if (event.key === "ArrowRight") {
-                updateFrame(Math.min(Number(slider.value) + 1, images.length - 1));
+                queueFrameRequest(Math.min(Number(slider.value) + 1, images.length - 1));
             }
         });
 
