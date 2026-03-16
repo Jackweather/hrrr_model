@@ -23,6 +23,9 @@ DEFAULT_REGION_ID = "northeast"
 REGIONS = [
     {"id": "northeast", "label": "Northeast"},
     {"id": "southeast", "label": "Southeast"},
+    {"id": "south_central", "label": "South Central"},
+    {"id": "north_central", "label": "North Central"},
+    {"id": "western", "label": "Western"},
     {"id": "conus", "label": "CONUS"},
 ]
 REGION_IDS = {region["id"] for region in REGIONS}
