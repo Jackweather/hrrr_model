@@ -2,25 +2,26 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from flask import Flask
+from flask import Flask, abort
 
 from routes import register_routes
 
 
 app = Flask(__name__)
-DATA_DIR = Path(os.environ.get("HRRR_DATA_DIR", "/var/data/mslp_prate_csnow_EAST")).expanduser().resolve()
-RUNS_DIR = Path(os.environ.get("HRRR_RUNS_DIR", str(DATA_DIR / "runs"))).expanduser().resolve()
-PNG_DIR = Path(os.environ.get("HRRR_PNG_DIR", str(DATA_DIR / "png"))).expanduser().resolve()
+APP_ROOT = Path(__file__).resolve().parent
+DATA_ROOT = Path(os.environ.get("HRRR_DATA_ROOT", "/var/data")).expanduser().resolve()
 PNG_PATTERN = re.compile(r"_(\d+)\.png$", re.IGNORECASE)
 RUN_ID_PATTERN = re.compile(r"^\d{8}_\d{2}z$", re.IGNORECASE)
 LOG_DIR = Path(os.environ.get("HRRR_LOG_DIR", "logs")).expanduser().resolve()
 EASTERN_TZ = ZoneInfo("America/New_York")
 LEGACY_RUN_ID = "legacy"
 DEFAULT_REGION_ID = "northeast"
+DEFAULT_PRODUCT_ID = "mslp"
 REGIONS = [
     {"id": "northeast", "label": "Northeast"},
     {"id": "southeast", "label": "Southeast"},
@@ -30,6 +31,43 @@ REGIONS = [
     {"id": "conus", "label": "CONUS"},
 ]
 REGION_IDS = {region["id"] for region in REGIONS}
+PRODUCTS = [
+    {
+        "id": "mslp",
+        "label": "MSLP / Precip",
+        "data_dir": Path(os.environ.get("HRRR_MSLP_DATA_DIR", str(DATA_ROOT / "mslp_prate_csnow_EAST"))).expanduser().resolve(),
+        "script_path": APP_ROOT / "mslp_prate_csnow_EAST.py",
+    },
+    {
+        "id": "tmp2m",
+        "label": "2 m Temperature",
+        "data_dir": Path(os.environ.get("HRRR_TMP2M_DATA_DIR", str(DATA_ROOT / "tmp2m_EAST"))).expanduser().resolve(),
+        "script_path": APP_ROOT / "tmp2m_EAST.py",
+    },
+]
+PRODUCT_IDS = {product["id"] for product in PRODUCTS}
+PRODUCTS_BY_ID = {product["id"]: product for product in PRODUCTS}
+
+
+def resolve_product_id(requested_product_id: str | None = None) -> str:
+    if requested_product_id in PRODUCT_IDS:
+        return str(requested_product_id)
+
+    return DEFAULT_PRODUCT_ID
+
+
+def get_product_config(product_id: str | None = None) -> dict:
+    return PRODUCTS_BY_ID[resolve_product_id(product_id)]
+
+
+def get_product_runs_dir(product_id: str | None = None) -> Path:
+    product_config = get_product_config(product_id)
+    return product_config["data_dir"] / "runs"
+
+
+def get_product_png_dir(product_id: str | None = None) -> Path:
+    product_config = get_product_config(product_id)
+    return product_config["data_dir"] / "png"
 
 
 def parse_run_id(run_id: str) -> datetime | None:
@@ -61,18 +99,21 @@ def resolve_region_id(requested_region_id: str | None = None) -> str:
     return DEFAULT_REGION_ID
 
 
-def get_run_directory(run_id: str, region_id: str = DEFAULT_REGION_ID) -> Path | None:
+def get_run_directory(product_id: str, run_id: str, region_id: str = DEFAULT_REGION_ID) -> Path | None:
+    resolved_product_id = resolve_product_id(product_id)
     resolved_region_id = resolve_region_id(region_id)
+    runs_dir = get_product_runs_dir(resolved_product_id)
+    png_dir = get_product_png_dir(resolved_product_id)
 
     if run_id == LEGACY_RUN_ID:
         if resolved_region_id != DEFAULT_REGION_ID:
             return None
-        return PNG_DIR
+        return png_dir
 
     if parse_run_id(run_id) is None:
         return None
 
-    run_png_dir = RUNS_DIR / run_id / "png"
+    run_png_dir = runs_dir / run_id / "png"
     region_dir = run_png_dir / resolved_region_id
     if region_dir.is_dir():
         return region_dir
@@ -83,15 +124,18 @@ def get_run_directory(run_id: str, region_id: str = DEFAULT_REGION_ID) -> Path |
     return None
 
 
-def list_runs() -> list[dict[str, str | int | bool]]:
+def list_runs(product_id: str | None = None) -> list[dict[str, str | int | bool]]:
+    resolved_product_id = resolve_product_id(product_id)
+    runs_dir = get_product_runs_dir(resolved_product_id)
+    png_dir = get_product_png_dir(resolved_product_id)
     run_items: list[dict[str, str | int | bool]] = []
 
-    if RUNS_DIR.is_dir():
-        for run_dir in sorted(RUNS_DIR.iterdir(), key=lambda path: path.name, reverse=True):
+    if runs_dir.is_dir():
+        for run_dir in sorted(runs_dir.iterdir(), key=lambda path: path.name, reverse=True):
             if not run_dir.is_dir() or parse_run_id(run_dir.name) is None:
                 continue
 
-            image_dir = get_run_directory(run_dir.name, DEFAULT_REGION_ID)
+            image_dir = get_run_directory(resolved_product_id, run_dir.name, DEFAULT_REGION_ID)
             if image_dir is None or not image_dir.exists():
                 continue
 
@@ -104,8 +148,8 @@ def list_runs() -> list[dict[str, str | int | bool]]:
                 }
             )
 
-    if not run_items and PNG_DIR.is_dir():
-        image_count = sum(1 for _ in PNG_DIR.glob("*.png"))
+    if not run_items and png_dir.is_dir():
+        image_count = sum(1 for _ in png_dir.glob("*.png"))
         run_items.append(
             {
                 "id": LEGACY_RUN_ID,
@@ -120,8 +164,8 @@ def list_runs() -> list[dict[str, str | int | bool]]:
     return run_items
 
 
-def resolve_run_id(requested_run_id: str | None = None) -> str | None:
-    run_items = list_runs()
+def resolve_run_id(requested_run_id: str | None = None, product_id: str | None = None) -> str | None:
+    run_items = list_runs(product_id)
     valid_run_ids = {item["id"] for item in run_items}
 
     if requested_run_id in valid_run_ids:
@@ -133,13 +177,18 @@ def resolve_run_id(requested_run_id: str | None = None) -> str | None:
     return None
 
 
-def list_images(run_id: str | None = None, region_id: str | None = None) -> tuple[list[dict[str, str | int]], str | None, str]:
-    resolved_run_id = resolve_run_id(run_id)
+def list_images(
+    product_id: str | None = None,
+    run_id: str | None = None,
+    region_id: str | None = None,
+) -> tuple[list[dict[str, str | int]], str | None, str, str]:
+    resolved_product_id = resolve_product_id(product_id)
+    resolved_run_id = resolve_run_id(run_id, resolved_product_id)
     resolved_region_id = resolve_region_id(region_id)
-    image_dir = get_run_directory(resolved_run_id, resolved_region_id) if resolved_run_id else None
+    image_dir = get_run_directory(resolved_product_id, resolved_run_id, resolved_region_id) if resolved_run_id else None
 
     if image_dir is None or not image_dir.is_dir():
-        return [], resolved_run_id, resolved_region_id
+        return [], resolved_run_id, resolved_region_id, resolved_product_id
 
     image_items = []
     for image_path in sorted(image_dir.glob("*.png"), key=lambda path: path.name):
@@ -151,11 +200,16 @@ def list_images(run_id: str | None = None, region_id: str | None = None) -> tupl
                 "filename": image_path.name,
                 "frame": frame,
                 "label": f"Hour {frame:02d}",
-                "url": f"/images/{resolved_run_id}/{resolved_region_id}/{image_path.name}?v={int(stat.st_mtime)}",
+                "url": f"/images/{resolved_product_id}/{resolved_run_id}/{resolved_region_id}/{image_path.name}?v={int(stat.st_mtime)}",
             }
         )
 
-    return sorted(image_items, key=lambda item: (item["frame"], item["filename"])), resolved_run_id, resolved_region_id
+    return (
+        sorted(image_items, key=lambda item: (item["frame"], item["filename"])),
+        resolved_run_id,
+        resolved_region_id,
+        resolved_product_id,
+    )
 
 
 def run_scripts(scripts: list[tuple[str, str]], task_number: int) -> None:
@@ -187,14 +241,45 @@ def run_scripts(scripts: list[tuple[str, str]], task_number: int) -> None:
             log_file.flush()
 
 
+@app.route("/run-task1")
+def run_task1():
+    scripts = [
+        ("/opt/render/project/src/mslp_prate_csnow_EAST.py", "/opt/render/project/src"),
+        ("/opt/render/project/src/tmp2m_EAST.py", "/opt/render/project/src"),
+    ]
+    threading.Thread(target=run_scripts, args=(scripts, 1), daemon=True).start()
+    return "Task started in background! Check logs folder for output.", 200
+
+
+@app.route("/run-task/<product_id>")
+def run_task(product_id: str):
+    resolved_product_id = resolve_product_id(product_id)
+    product_config = PRODUCTS_BY_ID.get(resolved_product_id)
+    if product_config is None:
+        abort(404)
+
+    script_path = product_config.get("script_path")
+    if script_path is None:
+        abort(404)
+
+    scripts = [
+        (str(script_path), str(Path(script_path).parent)),
+    ]
+    threading.Thread(target=run_scripts, args=(scripts, 1), daemon=True).start()
+    return f"Started {resolved_product_id} task in background! Check logs folder for output.", 200
+
+
 register_routes(
     app,
     default_region_id=DEFAULT_REGION_ID,
+    default_product_id=DEFAULT_PRODUCT_ID,
+    products=PRODUCTS,
     regions=REGIONS,
-    runs_dir=RUNS_DIR,
+    get_product_png_dir=get_product_png_dir,
     get_run_directory=get_run_directory,
     list_images=list_images,
     list_runs=list_runs,
+    resolve_product_id=resolve_product_id,
     resolve_region_id=resolve_region_id,
     resolve_run_id=resolve_run_id,
     run_scripts=run_scripts,
