@@ -176,6 +176,44 @@
             box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.24);
         }
 
+        .product-row {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr);
+            align-items: center;
+            gap: 12px;
+        }
+
+        .product-switch {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .product-button {
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--muted);
+            padding: 8px 14px;
+            font-size: 0.88rem;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            cursor: pointer;
+            transition: background 180ms ease, color 180ms ease, border-color 180ms ease, transform 180ms ease;
+        }
+
+        .product-button:hover {
+            border-color: rgba(102, 217, 239, 0.45);
+            color: var(--text);
+            transform: translateY(-1px);
+        }
+
+        .product-button.is-active {
+            background: linear-gradient(135deg, rgba(102, 217, 239, 0.28), rgba(53, 122, 214, 0.32));
+            border-color: rgba(102, 217, 239, 0.55);
+            color: var(--text);
+        }
+
         .run-row {
             display: grid;
             grid-template-columns: auto minmax(0, 320px);
@@ -259,6 +297,10 @@
                 grid-template-columns: 1fr;
             }
 
+            .product-row {
+                grid-template-columns: 1fr;
+            }
+
             .footer-meta,
             .slider-row {
                 grid-template-columns: 1fr;
@@ -298,6 +340,20 @@
         </main>
 
         <section class="controls">
+            <div class="product-row">
+                <span class="run-label">Variable</span>
+                <div class="product-switch" role="group" aria-label="Variable selector">
+                    {% for product in products %}
+                    <button
+                        type="button"
+                        class="product-button{% if product.id == selected_product %} is-active{% endif %}"
+                        data-product-button
+                        data-product-id="{{ product.id }}"
+                        aria-pressed="{% if product.id == selected_product %}true{% else %}false{% endif %}"
+                    >{{ product.label }}</button>
+                    {% endfor %}
+                </div>
+            </div>
             <div class="run-row">
                 <label class="run-label" for="regionSelect">Region</label>
                 <select id="regionSelect" class="run-select">
@@ -326,14 +382,18 @@
     </div>
 
     <script id="imagesData" type="application/json">{{ images | tojson }}</script>
+    <script id="productsData" type="application/json">{{ products | tojson }}</script>
     <script id="runsData" type="application/json">{{ runs | tojson }}</script>
     <script id="regionsData" type="application/json">{{ regions | tojson }}</script>
+    <script id="selectedProductData" type="application/json">{{ selected_product | tojson }}</script>
     <script id="selectedRunData" type="application/json">{{ selected_run | tojson }}</script>
     <script id="selectedRegionData" type="application/json">{{ selected_region | tojson }}</script>
     <script>
         let images = JSON.parse(document.getElementById("imagesData").textContent);
+        let availableProducts = JSON.parse(document.getElementById("productsData").textContent);
         let availableRuns = JSON.parse(document.getElementById("runsData").textContent);
         let availableRegions = JSON.parse(document.getElementById("regionsData").textContent);
+        let selectedProductId = JSON.parse(document.getElementById("selectedProductData").textContent);
         let selectedRunId = JSON.parse(document.getElementById("selectedRunData").textContent);
         let selectedRegionId = JSON.parse(document.getElementById("selectedRegionData").textContent);
         const slider = document.getElementById("frameSlider");
@@ -350,6 +410,7 @@
         const regionSelect = document.getElementById("regionSelect");
         const runSelect = document.getElementById("runSelect");
         const runStatus = document.getElementById("runStatus");
+        const productButtons = Array.from(document.querySelectorAll("[data-product-button]"));
         const imagePreloadCache = new Map();
         let currentIndex = 0;
         let activeLoadToken = 0;
@@ -365,6 +426,10 @@
 
         function getRunLabel(runId) {
             return availableRuns.find(run => run.id === runId)?.label ?? "No saved runs";
+        }
+
+        function getProductLabel(productId) {
+            return availableProducts.find(product => product.id === productId)?.label ?? "MSLP / Precip";
         }
 
         function getRegionLabel(regionId) {
@@ -383,9 +448,21 @@
                     return null;
                 }
 
+                if (pathSegments.length >= 5) {
+                    return pathSegments[2] ?? null;
+                }
+
                 return pathSegments[1] ?? null;
             } catch {
                 return null;
+            }
+        }
+
+        function syncProductButtons() {
+            for (const button of productButtons) {
+                const isActive = button.dataset.productId === selectedProductId;
+                button.classList.toggle("is-active", isActive);
+                button.setAttribute("aria-pressed", String(isActive));
             }
         }
 
@@ -468,8 +545,11 @@
                 return;
             }
 
+            const productLabel = getProductLabel(selectedProductId);
             const regionLabel = getRegionLabel(selectedRegionId);
-            runStatus.textContent = selectedRunId ? `Run: ${getRunLabel(selectedRunId)} | Region: ${regionLabel}` : `No saved runs | Region: ${regionLabel}`;
+            runStatus.textContent = selectedRunId
+                ? `Variable: ${productLabel} | Run: ${getRunLabel(selectedRunId)} | Region: ${regionLabel}`
+                : `Variable: ${productLabel} | No saved runs | Region: ${regionLabel}`;
         }
 
         function setLoadingProgress(loadedCount, totalCount) {
@@ -657,11 +737,13 @@
             slider.disabled = images.length === 0;
         }
 
-        function applyImages(nextImages, nextRunId, nextRegionId) {
+        function applyImages(nextImages, nextRunId, nextRegionId, nextProductId) {
             const currentFilename = images[currentIndex]?.filename;
             images = nextImages;
             selectedRunId = nextRunId;
             selectedRegionId = nextRegionId;
+            selectedProductId = nextProductId;
+            syncProductButtons();
             syncRegionSelect();
             syncRunSelect();
             syncSlider();
@@ -681,15 +763,23 @@
         }
 
         async function loadRun(runId, options = {}) {
-            const { showOverlay = false, regionId = selectedRegionId } = options;
+            const {
+                showOverlay = false,
+                regionId = selectedRegionId,
+                productId = selectedProductId,
+            } = options;
 
             try {
-                const response = await fetch(`/api/images?run=${encodeURIComponent(runId)}&region=${encodeURIComponent(regionId)}`, { cache: "no-store" });
+                const response = await fetch(
+                    `/api/images?product=${encodeURIComponent(productId)}&run=${encodeURIComponent(runId ?? "")}&region=${encodeURIComponent(regionId)}`,
+                    { cache: "no-store" }
+                );
                 if (!response.ok) {
                     return;
                 }
 
                 const payload = await response.json();
+                const nextProductId = payload.product_id ?? productId;
                 const nextRunId = payload.run_id ?? runId;
                 const nextRegionId = payload.region_id ?? regionId;
                 const nextImages = payload.images ?? [];
@@ -705,7 +795,7 @@
                     return;
                 }
 
-                applyImages(preloadedImages, nextRunId, nextRegionId);
+                applyImages(preloadedImages, nextRunId, nextRegionId, nextProductId);
                 if (preloadedImages.length) {
                     hasCompletedInitialLoad = true;
                 }
@@ -720,16 +810,25 @@
                     return;
                 }
 
-                const response = await fetch(`/api/images?run=${encodeURIComponent(selectedRunId)}&region=${encodeURIComponent(selectedRegionId)}`, { cache: "no-store" });
+                const response = await fetch(
+                    `/api/images?product=${encodeURIComponent(selectedProductId)}&run=${encodeURIComponent(selectedRunId)}&region=${encodeURIComponent(selectedRegionId)}`,
+                    { cache: "no-store" }
+                );
                 if (!response.ok) {
                     return;
                 }
 
                 const payload = await response.json();
+                const nextProductId = payload.product_id ?? selectedProductId;
                 const nextRunId = payload.run_id ?? selectedRunId;
                 const nextRegionId = payload.region_id ?? selectedRegionId;
                 const nextImages = payload.images ?? [];
-                if (nextRunId === selectedRunId && nextRegionId === selectedRegionId && JSON.stringify(nextImages) === JSON.stringify(images)) {
+                if (
+                    nextProductId === selectedProductId
+                    && nextRunId === selectedRunId
+                    && nextRegionId === selectedRegionId
+                    && JSON.stringify(nextImages) === JSON.stringify(images)
+                ) {
                     return;
                 }
 
@@ -745,7 +844,7 @@
                     return;
                 }
 
-                applyImages(preloadedImages, nextRunId, nextRegionId);
+                applyImages(preloadedImages, nextRunId, nextRegionId, nextProductId);
                 if (preloadedImages.length) {
                     hasCompletedInitialLoad = true;
                 }
@@ -754,24 +853,57 @@
             }
         }
 
+        async function loadProduct(productId) {
+            try {
+                const response = await fetch(`/api/runs?product=${encodeURIComponent(productId)}`, { cache: "no-store" });
+                if (!response.ok) {
+                    return;
+                }
+
+                const payload = await response.json();
+                selectedProductId = payload.product_id ?? productId;
+                availableRuns = payload.runs ?? [];
+                syncProductButtons();
+                syncRunSelect();
+                updateRunStatus();
+
+                const nextRunId = availableRuns.some(run => run.id === selectedRunId)
+                    ? selectedRunId
+                    : getLatestRunId();
+
+                followingLatestRun = nextRunId === getLatestRunId();
+
+                if (!nextRunId) {
+                    applyImages([], null, selectedRegionId, selectedProductId);
+                    return;
+                }
+
+                await loadRun(nextRunId, { productId: selectedProductId, regionId: selectedRegionId, showOverlay: true });
+            } catch {
+                return;
+            }
+        }
+
         async function refreshRunsAndImages() {
             try {
-                const response = await fetch("/api/runs", { cache: "no-store" });
+                const response = await fetch(`/api/runs?product=${encodeURIComponent(selectedProductId)}`, { cache: "no-store" });
                 if (response.ok) {
                     const payload = await response.json();
+                    selectedProductId = payload.product_id ?? selectedProductId;
                     availableRuns = payload.runs ?? [];
+                    syncProductButtons();
                     syncRunSelect();
 
                     const latestRunId = getLatestRunId();
                     const selectedRunExists = availableRuns.some(run => run.id === selectedRunId);
                     if (!selectedRunExists && latestRunId) {
                         followingLatestRun = true;
-                        await loadRun(latestRunId);
+                        await loadRun(latestRunId, { productId: selectedProductId });
                         return;
                     }
 
                     if (followingLatestRun && latestRunId && latestRunId !== selectedRunId) {
-                        await loadRun(latestRunId);
+                        await loadRun(latestRunId, { productId: selectedProductId });
                         return;
                     }
                 }
@@ -785,7 +917,19 @@
 
         syncRunSelect();
         syncRegionSelect();
+        syncProductButtons();
         updateRunStatus();
+
+        for (const button of productButtons) {
+            button.addEventListener("click", event => {
+                const requestedProductId = event.currentTarget.dataset.productId;
+                if (!requestedProductId || requestedProductId === selectedProductId) {
+                    return;
+                }
+
+                loadProduct(requestedProductId);
+            });
+        }
 
         slider.addEventListener("input", event => {
             queueFrameRequest(Number(event.target.value));
@@ -807,7 +951,7 @@
                 return;
             }
 
-            loadRun(selectedRunId ?? getLatestRunId(), { regionId: requestedRegionId, showOverlay: true });
+            loadRun(selectedRunId ?? getLatestRunId(), { productId: selectedProductId, regionId: requestedRegionId, showOverlay: true });
         });
 
         document.addEventListener("keydown", event => {
@@ -830,7 +974,7 @@
                 if (!preloadedImages) {
                     return;
                 }
-                applyImages(preloadedImages, selectedRunId, selectedRegionId);
+                applyImages(preloadedImages, selectedRunId, selectedRegionId, selectedProductId);
                 if (preloadedImages.length) {
                     hasCompletedInitialLoad = true;
                 }
