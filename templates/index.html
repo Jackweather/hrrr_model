@@ -169,74 +169,37 @@
             position: sticky;
             bottom: 0;
             display: grid;
-            gap: 8px;
-            padding: 10px 16px 12px;
+            gap: 6px;
+            padding: 10px 12px 6px;
             background: var(--panel-strong);
             border-top: 1px solid var(--border);
-            box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.24);
+            box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.22);
+        }
+
+        .control-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr);
+            gap: 8px;
+            align-items: center;
+            margin-top: 2px;
         }
 
         .product-row {
-            display: grid;
-            grid-template-columns: auto minmax(0, 1fr);
-            align-items: center;
-            gap: 12px;
-        }
-
-        .product-switch {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-
-        .product-button {
-            border: 1px solid var(--border);
-            border-radius: 999px;
-            background: rgba(255, 255, 255, 0.04);
-            color: var(--muted);
-            padding: 8px 14px;
-            font-size: 0.88rem;
-            font-weight: 600;
-            letter-spacing: 0.01em;
-            cursor: pointer;
-            transition: background 180ms ease, color 180ms ease, border-color 180ms ease, transform 180ms ease;
-        }
-
-        .product-button:hover {
-            border-color: rgba(102, 217, 239, 0.45);
-            color: var(--text);
-            transform: translateY(-1px);
-        }
-
-        .product-button.is-active {
-            background: linear-gradient(135deg, rgba(102, 217, 239, 0.28), rgba(53, 122, 214, 0.32));
-            border-color: rgba(102, 217, 239, 0.55);
-            color: var(--text);
+            min-width: 0;
         }
 
         .run-row {
-            display: grid;
-            grid-template-columns: auto minmax(0, 320px);
-            align-items: center;
-            gap: 12px;
-        }
-
-        .run-label {
-            color: var(--muted);
-            font-size: 0.82rem;
-            font-weight: 600;
-            letter-spacing: 0.02em;
-            text-transform: uppercase;
+            min-width: 0;
         }
 
         .run-select {
             width: 100%;
             border: 1px solid var(--border);
-            border-radius: 12px;
+            border-radius: 10px;
             background: rgba(255, 255, 255, 0.04);
             color: var(--text);
-            padding: 8px 10px;
-            font-size: 0.9rem;
+            padding: 6px 8px;
+            font-size: 0.84rem;
             color-scheme: dark;
             appearance: none;
         }
@@ -254,12 +217,13 @@
         .slider-row {
             display: grid;
             align-items: center;
-            gap: 8px;
+            gap: 4px;
         }
 
         input[type="range"] {
             width: 100%;
             accent-color: var(--accent);
+            margin: 0;
         }
 
         .footer-meta {
@@ -267,8 +231,8 @@
             align-items: center;
             justify-content: space-between;
             flex-wrap: wrap;
-            gap: 8px;
-            font-size: 0.85rem;
+            gap: 6px;
+            font-size: 0.78rem;
             color: var(--muted);
         }
 
@@ -289,16 +253,25 @@
             }
 
             .image-shell {
-                height: calc(100vh - 122px);
+                height: calc(100vh - 108px);
                 border-radius: 12px;
             }
 
-            .run-row {
+            .controls {
+                padding: 9px 10px 6px;
+            }
+
+            .control-row {
                 grid-template-columns: 1fr;
+                gap: 6px;
+            }
+
+            .run-row {
+                width: 100%;
             }
 
             .product-row {
-                grid-template-columns: 1fr;
+                width: 100%;
             }
 
             .footer-meta,
@@ -340,35 +313,28 @@
         </main>
 
         <section class="controls">
-            <div class="product-row">
-                <span class="run-label">Variable</span>
-                <div class="product-switch" role="group" aria-label="Variable selector">
-                    {% for product in products %}
-                    <button
-                        type="button"
-                        class="product-button{% if product.id == selected_product %} is-active{% endif %}"
-                        data-product-button
-                        data-product-id="{{ product.id }}"
-                        aria-pressed="{% if product.id == selected_product %}true{% else %}false{% endif %}"
-                    >{{ product.label }}</button>
-                    {% endfor %}
+            <div class="control-row">
+                <div class="product-row">
+                    <select id="productSelect" class="run-select" aria-label="Variable">
+                        {% for product in products %}
+                        <option value="{{ product.id }}" {% if product.id == selected_product %}selected{% endif %}>Variable: {{ product.label }}</option>
+                        {% endfor %}
+                    </select>
                 </div>
-            </div>
-            <div class="run-row">
-                <label class="run-label" for="regionSelect">Region</label>
-                <select id="regionSelect" class="run-select">
-                    {% for region in regions %}
-                    <option value="{{ region.id }}" {% if region.id == selected_region %}selected{% endif %}>{{ region.label }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="run-row">
-                <label class="run-label" for="runSelect">Run</label>
-                <select id="runSelect" class="run-select" {% if not runs %}disabled{% endif %}>
-                    {% for run in runs %}
-                    <option value="{{ run.id }}" {% if run.id == selected_run %}selected{% endif %}>{{ run.label }}</option>
-                    {% endfor %}
-                </select>
+                <div class="run-row">
+                    <select id="regionSelect" class="run-select" aria-label="Region">
+                        {% for region in regions %}
+                        <option value="{{ region.id }}" {% if region.id == selected_region %}selected{% endif %}>{{ region.label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="run-row">
+                    <select id="runSelect" class="run-select" aria-label="Run" {% if not runs %}disabled{% endif %}>
+                        {% for run in runs %}
+                        <option value="{{ run.id }}" {% if run.id == selected_run %}selected{% endif %}>{{ run.label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
             </div>
             <div class="slider-row">
                 <input id="frameSlider" type="range" min="0" max="{{ image_count - 1 if image_count else 0 }}" value="0" {% if not images %}disabled{% endif %}>
@@ -407,10 +373,10 @@
         const loadingBarFill = document.getElementById("loadingBarFill");
         const loadingCount = document.getElementById("loadingCount");
         const loadingPercent = document.getElementById("loadingPercent");
+        const productSelect = document.getElementById("productSelect");
         const regionSelect = document.getElementById("regionSelect");
         const runSelect = document.getElementById("runSelect");
         const runStatus = document.getElementById("runStatus");
-        const productButtons = Array.from(document.querySelectorAll("[data-product-button]"));
         const imagePreloadCache = new Map();
         let currentIndex = 0;
         let activeLoadToken = 0;
@@ -458,12 +424,12 @@
             }
         }
 
-        function syncProductButtons() {
-            for (const button of productButtons) {
-                const isActive = button.dataset.productId === selectedProductId;
-                button.classList.toggle("is-active", isActive);
-                button.setAttribute("aria-pressed", String(isActive));
+        function syncProductSelect() {
+            if (!productSelect) {
+                return;
             }
+
+            productSelect.value = selectedProductId;
         }
 
         function pruneImagePreloadCache() {
@@ -743,7 +709,7 @@
             selectedRunId = nextRunId;
             selectedRegionId = nextRegionId;
             selectedProductId = nextProductId;
-            syncProductButtons();
+            syncProductSelect();
             syncRegionSelect();
             syncRunSelect();
             syncSlider();
@@ -863,7 +829,7 @@
                 const payload = await response.json();
                 selectedProductId = payload.product_id ?? productId;
                 availableRuns = payload.runs ?? [];
-                syncProductButtons();
+                syncProductSelect();
                 syncRunSelect();
                 updateRunStatus();
 
@@ -891,7 +857,7 @@
                     const payload = await response.json();
                     selectedProductId = payload.product_id ?? selectedProductId;
                     availableRuns = payload.runs ?? [];
-                    syncProductButtons();
+                    syncProductSelect();
                     syncRunSelect();
 
                     const latestRunId = getLatestRunId();
@@ -917,19 +883,17 @@
 
         syncRunSelect();
         syncRegionSelect();
-        syncProductButtons();
+        syncProductSelect();
         updateRunStatus();
 
-        for (const button of productButtons) {
-            button.addEventListener("click", event => {
-                const requestedProductId = event.currentTarget.dataset.productId;
-                if (!requestedProductId || requestedProductId === selectedProductId) {
-                    return;
-                }
+        productSelect?.addEventListener("change", event => {
+            const requestedProductId = event.target.value;
+            if (!requestedProductId || requestedProductId === selectedProductId) {
+                return;
+            }
 
-                loadProduct(requestedProductId);
-            });
-        }
+            loadProduct(requestedProductId);
+        });
 
         slider.addEventListener("input", event => {
             queueFrameRequest(Number(event.target.value));
