@@ -212,11 +212,42 @@ def list_images(
     )
 
 
-def run_scripts(scripts: list[tuple[str, str]], task_number: int) -> None:
+def run_scripts(scripts: list[tuple[str, str]], task_number: int, parallel: bool = False) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"task{task_number}.log"
 
     with log_path.open("a", encoding="utf-8") as log_file:
+        if parallel:
+            processes: list[tuple[str, subprocess.Popen[str]]] = []
+
+            for script_path, working_dir in scripts:
+                log_file.write(f"Starting {script_path}\n")
+                log_file.flush()
+
+                try:
+                    process = subprocess.Popen(
+                        [sys.executable, script_path],
+                        cwd=working_dir,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                    processes.append((script_path, process))
+                except Exception as exc:
+                    log_file.write(f"Failed to run {script_path}: {exc}\n\n")
+                    log_file.flush()
+
+            for script_path, process in processes:
+                stdout, stderr = process.communicate()
+                if stdout:
+                    log_file.write(stdout)
+                if stderr:
+                    log_file.write(stderr)
+                log_file.write(f"Finished {script_path} with exit code {process.returncode}\n\n")
+                log_file.flush()
+
+            return
+
         for script_path, working_dir in scripts:
             log_file.write(f"Starting {script_path}\n")
             log_file.flush()
@@ -247,7 +278,7 @@ def run_task1():
         ("/opt/render/project/src/mslp_prate_csnow_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/tmp2m_EAST.py", "/opt/render/project/src"),
     ]
-    threading.Thread(target=run_scripts, args=(scripts, 3), daemon=True).start()
+    threading.Thread(target=run_scripts, args=(scripts, 3), kwargs={"parallel": True}, daemon=True).start()
     return "Task started in background! Check logs folder for output.", 200
 
 
