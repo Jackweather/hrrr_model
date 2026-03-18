@@ -111,6 +111,7 @@ western_gdf, WESTERN_EXTENT, western_outline, western_states_gdf = get_region_ge
 )
 CONUS_EXTENT = [-127, -66, 24, 50]
 TARGET_PLOT_ASPECT = (REGION_EXTENT[1] - REGION_EXTENT[0]) / (REGION_EXTENT[3] - REGION_EXTENT[2])
+REGION_SUBSET_PADDING_DEGREES = 1.5
 REGION_CONFIGS = {
     "northeast": {
         "label": "Northeast",
@@ -348,6 +349,20 @@ def expand_extent_to_aspect(extent, target_aspect):
     return [min_lon, max_lon, min_lat, max_lat]
 
 
+for region_name, region_config in REGION_CONFIGS.items():
+    region_extent = region_config["extent"]
+    region_config["plot_extent"] = (
+        expand_extent_to_aspect(region_extent, TARGET_PLOT_ASPECT)
+        if region_name == "conus"
+        else region_extent
+    )
+
+    counties_gdf = region_config.get("counties_gdf")
+    states_gdf = region_config.get("states_gdf")
+    region_config["county_geometries"] = tuple(counties_gdf.geometry) if counties_gdf is not None else ()
+    region_config["state_geometries"] = tuple(states_gdf.geometry) if states_gdf is not None else ()
+
+
 temperature_levels = [-20, 0, 10, 20, 32, 40, 50, 60, 70, 80, 90, 100]
 temperature_tick_levels = temperature_levels
 temperature_cmap = LinearSegmentedColormap.from_list(
@@ -415,14 +430,9 @@ def get_lat_lon_fields(dataset):
     return latitude, longitude
 
 
-def plot_temperature(tmp_path, step, run_time, region_name):
+def load_temperature_plot_data(tmp_path):
     dataset = None
-    figure = None
     try:
-        region_config = REGION_CONFIGS[region_name]
-        extent = region_config["extent"]
-        plot_extent = expand_extent_to_aspect(extent, TARGET_PLOT_ASPECT) if region_name == "conus" else extent
-
         dataset = xr.open_dataset(tmp_path, engine="cfgrib", chunks={})
         temperature_field = get_temperature_variable(dataset)
         latitude_field, longitude_field = get_lat_lon_fields(dataset)
@@ -442,6 +452,85 @@ def plot_temperature(tmp_path, step, run_time, region_name):
             lon2d, lat2d = np.meshgrid(lons_plot, lats)
         else:
             lon2d, lat2d = lons_plot, lats
+
+        return {
+            "temperature_fahrenheit": temperature_fahrenheit,
+            "temperature_contours": temperature_contours,
+            "lon2d": lon2d,
+            "lat2d": lat2d,
+        }
+    except Exception as exc:
+        print(f"Error loading temperature data: {exc}")
+        return None
+    finally:
+        if dataset is not None:
+            dataset.close()
+
+
+def get_region_plot_data(plot_data, extent, padding_degrees=REGION_SUBSET_PADDING_DEGREES):
+    min_lon, max_lon, min_lat, max_lat = extent
+    lon2d = plot_data["lon2d"]
+    lat2d = plot_data["lat2d"]
+
+    region_mask = (
+        (lon2d >= (min_lon - padding_degrees))
+        & (lon2d <= (max_lon + padding_degrees))
+        & (lat2d >= (min_lat - padding_degrees))
+        & (lat2d <= (max_lat + padding_degrees))
+    )
+
+    if not np.any(region_mask):
+        return plot_data
+
+    row_indices = np.where(np.any(region_mask, axis=1))[0]
+    col_indices = np.where(np.any(region_mask, axis=0))[0]
+    if row_indices.size == 0 or col_indices.size == 0:
+        return plot_data
+
+    row_slice = slice(row_indices[0], row_indices[-1] + 1)
+    col_slice = slice(col_indices[0], col_indices[-1] + 1)
+    return {
+        "temperature_fahrenheit": plot_data["temperature_fahrenheit"][row_slice, col_slice],
+        "temperature_contours": plot_data["temperature_contours"][row_slice, col_slice],
+        "lon2d": plot_data["lon2d"][row_slice, col_slice],
+        "lat2d": plot_data["lat2d"][row_slice, col_slice],
+    }
+
+
+def add_region_overlays(axis, region_config):
+    county_geometries = region_config.get("county_geometries")
+    state_geometries = region_config.get("state_geometries")
+
+    if county_geometries and state_geometries:
+        axis.add_geometries(
+            county_geometries,
+            ccrs.PlateCarree(),
+            facecolor="none",
+            edgecolor="gray",
+            linewidth=0.3,
+            zorder=7,
+        )
+        axis.add_geometries(
+            state_geometries,
+            ccrs.PlateCarree(),
+            facecolor="none",
+            edgecolor="#000000",
+            linewidth=1.0,
+            zorder=8,
+        )
+        return
+
+    axis.add_feature(cfeature.BORDERS, linewidth=0.5, edgecolor="#444444", zorder=7)
+    axis.add_feature(cfeature.STATES, linewidth=0.35, edgecolor="#666666", zorder=8)
+
+
+def plot_temperature(plot_data, step, run_time, region_name):
+    figure = None
+    try:
+        region_config = REGION_CONFIGS[region_name]
+        extent = region_config["extent"]
+        plot_extent = region_config["plot_extent"]
+        region_plot_data = get_region_plot_data(plot_data, plot_extent) if region_name != "conus" else plot_data
 
         valid_time = run_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=step)
         local_valid = valid_time.astimezone(EASTERN_TZ)
@@ -469,9 +558,9 @@ def plot_temperature(tmp_path, step, run_time, region_name):
         axis.set_facecolor("white")
 
         mesh = axis.contourf(
-            lon2d,
-            lat2d,
-            temperature_fahrenheit,
+            region_plot_data["lon2d"],
+            region_plot_data["lat2d"],
+            region_plot_data["temperature_fahrenheit"],
             levels=temperature_levels,
             cmap=temperature_cmap,
             norm=temperature_norm,
@@ -481,9 +570,9 @@ def plot_temperature(tmp_path, step, run_time, region_name):
             zorder=1,
         )
         contours = axis.contour(
-            lon2d,
-            lat2d,
-            temperature_contours,
+            region_plot_data["lon2d"],
+            region_plot_data["lat2d"],
+            region_plot_data["temperature_contours"],
             levels=temperature_contour_levels,
             colors="black",
             linewidths=0.55,
@@ -494,14 +583,7 @@ def plot_temperature(tmp_path, step, run_time, region_name):
         axis.clabel(contours, fmt="%d", fontsize=6, colors="black", inline=True)
 
         try:
-            counties_gdf = region_config.get("counties_gdf")
-            states_gdf = region_config.get("states_gdf")
-            if counties_gdf is not None and states_gdf is not None:
-                counties_gdf.plot(ax=axis, facecolor="none", edgecolor="gray", linewidth=0.3, zorder=7)
-                states_gdf.boundary.plot(ax=axis, edgecolor="#000000", linewidth=1.0, zorder=8)
-            else:
-                axis.add_feature(cfeature.BORDERS, linewidth=0.5, edgecolor="#444444", zorder=7)
-                axis.add_feature(cfeature.STATES, linewidth=0.35, edgecolor="#666666", zorder=8)
+            add_region_overlays(axis, region_config)
         except Exception as exc:
             print(f"Error plotting overlays: {exc}")
 
@@ -556,11 +638,50 @@ def plot_temperature(tmp_path, step, run_time, region_name):
         print(f"Error in plot_temperature: {exc}")
         return None
     finally:
-        if dataset is not None:
-            dataset.close()
         if figure is not None:
             plt.close(figure)
-        gc.collect()
+
+
+def download_all_gribs(run_time, forecast_steps, variable):
+    downloaded_gribs = {}
+    print("Starting GRIB download phase.")
+
+    for step_group in forecast_steps:
+        for step in step_group:
+            grib_path = get_hrrr_grib(run_time, step, variable)
+            if grib_path:
+                downloaded_gribs[step] = grib_path
+            else:
+                print(
+                    f"Skipping forecast hour {step:02d} for run {run_time.strftime('%Y-%m-%d %HZ')} "
+                    "because the temperature file is not available."
+                )
+
+    return downloaded_gribs
+
+
+def generate_all_pngs(downloaded_gribs, run_time):
+    print("Starting PNG generation phase.")
+
+    for step_group in forecast_steps:
+        for step in step_group:
+            grib_path = downloaded_gribs.get(step)
+            if not grib_path:
+                continue
+
+            plot_data = load_temperature_plot_data(grib_path)
+            if plot_data is None:
+                continue
+
+            for region_name in REGION_CONFIGS:
+                plot_temperature(plot_data, step, run_time, region_name)
+
+            if os.path.exists(grib_path):
+                os.remove(grib_path)
+
+            gc.collect()
+
+        prune_old_runs(MAX_SAVED_RUNS, keep_run_id=current_run_id)
 
 
 def clear_folder(folder_path):
@@ -574,24 +695,7 @@ def clear_folder(folder_path):
 
 clear_folder(grib_dir)
 
-for step_group in forecast_steps:
-    for step in step_group:
-        tmp_grib = get_hrrr_grib(most_recent_run_time, step, variable_tmp)
-
-        if tmp_grib:
-            for region_name in REGION_CONFIGS:
-                plot_temperature(tmp_grib, step, most_recent_run_time, region_name)
-        else:
-            print(
-                f"Skipping forecast hour {step:02d} for run {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
-                "because the temperature file is not available."
-            )
-
-        if tmp_grib and os.path.exists(tmp_grib):
-            os.remove(tmp_grib)
-
-        gc.collect()
-
-    prune_old_runs(MAX_SAVED_RUNS, keep_run_id=current_run_id)
+downloaded_gribs = download_all_gribs(most_recent_run_time, forecast_steps, variable_tmp)
+generate_all_pngs(downloaded_gribs, most_recent_run_time)
 
 print("HRRR 2 m temperature processing complete.")
