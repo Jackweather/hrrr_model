@@ -727,8 +727,8 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
             path_effects=[patheffects.Stroke(linewidth=1, foreground='white'), patheffects.Normal()]
         )
         ax.text(
-            text_x, text_y_base, "Hrrrweathermodel.com",
-            fontsize=9, color="black", ha="right", va="bottom",
+            text_x, text_y_base, "Truelocalwx.com",
+            fontsize=7, color="black", ha="right", va="bottom",
             fontweight="normal", alpha=0.85,
             transform=ccrs.PlateCarree(),
             zorder=20,
