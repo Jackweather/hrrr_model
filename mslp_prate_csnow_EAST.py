@@ -406,90 +406,109 @@ def get_hrrr_grib(run_time, step, variable):
     )
     return download_grib(url, file_path)
 
+
+def download_all_gribs(run_time, steps):
+    variables = ["MSLMA", "PRATE", "CSNOW", "CFRZR", "CICEP"]
+    grib_files_by_step = {}
+
+    for step in steps:
+        print(f"Downloading GRIB files for forecast hour {step:02d}...")
+        step_gribs = {}
+        for variable in variables:
+            step_gribs[variable] = get_hrrr_grib(run_time, step, variable)
+        grib_files_by_step[step] = step_gribs
+
+    return grib_files_by_step
+
+
+def cleanup_downloaded_gribs(grib_files_by_step):
+    removed_paths = set()
+
+    for step_gribs in grib_files_by_step.values():
+        for grib_file in step_gribs.values():
+            if grib_file and grib_file not in removed_paths and os.path.exists(grib_file):
+                os.remove(grib_file)
+                removed_paths.add(grib_file)
+
+
+def load_combined_plot_data(mslp_path, prate_path, csnow_path=None, cfrzr_path=None, cicep_path=None):
+    ds_mslp = None
+    ds_prate = None
+    ds_csnow = None
+    ds_cfrzr = None
+    ds_cicep = None
+
+    try:
+        ds_mslp = xr.open_dataset(mslp_path, engine="cfgrib")
+        ds_prate = xr.open_dataset(prate_path, engine="cfgrib")
+        ds_csnow = xr.open_dataset(csnow_path, engine="cfgrib") if csnow_path else None
+        ds_cfrzr = xr.open_dataset(cfrzr_path, engine="cfgrib") if cfrzr_path else None
+        ds_cicep = xr.open_dataset(cicep_path, engine="cfgrib") if cicep_path else None
+
+        mslp = ds_mslp.get("mslma")
+        prate = ds_prate.get("prate")
+        if mslp is None or prate is None:
+            print("Required variables not in datasets")
+            return None
+
+        mslp = mslp.values / 100.0
+        prate = prate.values * 3600
+
+        lats = ds_mslp["latitude"].values
+        lons = ds_mslp["longitude"].values
+        lons_plot = np.where(lons > 180, lons - 360, lons)
+
+        if lats.ndim == 1 and lons.ndim == 1:
+            lon2d, lat2d = np.meshgrid(lons_plot, lats)
+            mslp2d = mslp.squeeze()
+            prate2d = prate.squeeze()
+        else:
+            lon2d, lat2d = lons_plot, lats
+            mslp2d = mslp.squeeze()
+            prate2d = prate.squeeze()
+
+        def build_precip_type_rate(dataset, variable_name):
+            if dataset is None or variable_name not in dataset:
+                return None
+
+            try:
+                precip_type = dataset[variable_name].values * 3600
+                precip_type_2d = precip_type.squeeze()
+                if precip_type_2d.shape == prate2d.shape:
+                    return np.where(precip_type_2d > 0, prate2d, np.nan)
+            except Exception:
+                return None
+
+            return None
+
+        return {
+            "Lon2d": lon2d,
+            "Lat2d": lat2d,
+            "mslp2d": mslp2d,
+            "prate2d": prate2d,
+            "snow_rate2d": build_precip_type_rate(ds_csnow, "csnow"),
+            "cfrzr_rate2d": build_precip_type_rate(ds_cfrzr, "cfrzr"),
+            "cicep_rate2d": build_precip_type_rate(ds_cicep, "cicep"),
+        }
+    finally:
+        for dataset in (ds_mslp, ds_prate, ds_csnow, ds_cfrzr, ds_cicep):
+            if dataset is not None:
+                dataset.close()
+
 # --- Plotting function (uses adjusted NY extent) ---
-def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path=None, cfrzr_path=None, cicep_path=None):
+def plot_combined(plot_data, step, run_time, region_name):
     try:
         region_config = REGION_CONFIGS[region_name]
         extent = region_config["extent"]
         plot_extent = expand_extent_to_aspect(extent, TARGET_PLOT_ASPECT) if region_name == "conus" else extent
 
-        # Open datasets with dask chunking for lazy loading
-        ds_mslp = xr.open_dataset(mslp_path, engine="cfgrib", chunks={})
-        ds_prate = xr.open_dataset(prate_path, engine="cfgrib", chunks={})
-        ds_csnow = xr.open_dataset(csnow_path, engine="cfgrib", chunks={}) if csnow_path else None
-        ds_cfrzr = xr.open_dataset(cfrzr_path, engine="cfgrib", chunks={}) if cfrzr_path else None
-        ds_cicep = xr.open_dataset(cicep_path, engine="cfgrib", chunks={}) if cicep_path else None
-
-        # extract arrays
-        mslp = ds_mslp.get('mslma')
-        prate = ds_prate.get('prate')
-        if mslp is None or prate is None:
-            print("Required variables not in datasets")
-            ds_mslp.close()
-            ds_prate.close()
-            if ds_csnow is not None:
-                ds_csnow.close()
-            if ds_cfrzr is not None:
-                ds_cfrzr.close()
-            if ds_cicep is not None:
-                ds_cicep.close()
-            return None
-        mslp = mslp.values / 100.0  # Pa to hPa
-        prate = prate.values * 3600  # mm/s to mm/hr
-
-        lats = ds_mslp['latitude'].values
-        lons = ds_mslp['longitude'].values
-        lons_plot = np.where(lons > 180, lons - 360, lons)
-
-        if lats.ndim == 1 and lons.ndim == 1:
-            Lon2d, Lat2d = np.meshgrid(lons_plot, lats)
-            mslp2d = mslp.squeeze()
-            prate2d = prate.squeeze()
-        else:
-            Lon2d, Lat2d = lons_plot, lats
-            mslp2d = mslp.squeeze()
-            prate2d = prate.squeeze()
-
-        # --- Ensure rate arrays exist before masking (prevent UnboundLocalError) ---
-        snow_rate2d = None
-        cfrzr_rate2d = None
-        cicep_rate2d = None
-
-        # compute snow_rate2d if csnow dataset present
-        if ds_csnow is not None and "csnow" in ds_csnow:
-            try:
-                csnow = ds_csnow['csnow'].values * 3600
-                csnow2d = csnow.squeeze()
-                if csnow2d.shape == prate2d.shape:
-                    snow_mask = (csnow2d > 0)
-                    snow_rate2d = np.where(snow_mask, prate2d, np.nan)
-            except Exception:
-                snow_rate2d = None
-            ds_csnow.close()
-
-        # compute cfrzr_rate2d if cfrzr dataset present
-        if ds_cfrzr is not None and "cfrzr" in ds_cfrzr:
-            try:
-                cfrzr = ds_cfrzr['cfrzr'].values * 3600
-                cfrzr2d = cfrzr.squeeze()
-                if cfrzr2d.shape == prate2d.shape:
-                    cfrzr_mask = (cfrzr2d > 0)
-                    cfrzr_rate2d = np.where(cfrzr_mask, prate2d, np.nan)
-            except Exception:
-                cfrzr_rate2d = None
-            ds_cfrzr.close()
-
-        # compute cicep_rate2d if cicep dataset present
-        if ds_cicep is not None and "cicep" in ds_cicep:
-            try:
-                cicep = ds_cicep['cicep'].values * 3600
-                cicep2d = cicep.squeeze()
-                if cicep2d.shape == prate2d.shape:
-                    cicep_mask = (cicep2d > 0)
-                    cicep_rate2d = np.where(cicep_mask, prate2d, np.nan)
-            except Exception:
-                cicep_rate2d = None
-            ds_cicep.close()
+        Lon2d = plot_data["Lon2d"]
+        Lat2d = plot_data["Lat2d"]
+        mslp2d = plot_data["mslp2d"]
+        prate2d = plot_data["prate2d"]
+        snow_rate2d = plot_data["snow_rate2d"]
+        cfrzr_rate2d = plot_data["cfrzr_rate2d"]
+        cicep_rate2d = plot_data["cicep_rate2d"]
 
         # Do not mask weather data to region; plot full grid
 
@@ -564,7 +583,6 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
             snow_norm = BoundaryNorm(snow_levels, snow_cmap.N)
             snow_mesh = ax.contourf(Lon2d, Lat2d, snow_rate2d, levels=snow_levels, cmap=snow_cmap, norm=snow_norm, extend='max', transform=ccrs.PlateCarree(), alpha=0.85, zorder=3)
 
-        plt.draw()
         if region_name != "conus":
             cbar_y = colorbar_band_bottom
         else:
@@ -739,8 +757,6 @@ def plot_combined(mslp_path, prate_path, step, run_time, region_name, csnow_path
         png_path = os.path.join(png_dirs[region_name], f"hrrr_combined_{region_name}_{step:02d}.png")
         plt.savefig(png_path, bbox_inches="tight", dpi=300)
         plt.close(fig)
-        ds_mslp.close()
-        ds_prate.close()
         print(f"Generated PNG: {png_path}")
         gc.collect()
         return png_path
@@ -761,30 +777,40 @@ def clear_folder(folder_path):
 clear_folder(grib_dir)
 
 # Main process
-for step_group in forecast_steps:
-    for step in step_group:
-        mslp_grib = get_hrrr_grib(most_recent_run_time, step, "MSLMA")
-        prate_grib = get_hrrr_grib(most_recent_run_time, step, "PRATE")
-        csnow_grib = get_hrrr_grib(most_recent_run_time, step, "CSNOW")
-        cfrzr_grib = get_hrrr_grib(most_recent_run_time, step, "CFRZR")
-        cicep_grib = get_hrrr_grib(most_recent_run_time, step, "CICEP")
+all_downloaded_gribs = download_all_gribs(most_recent_run_time, forecast_step_numbers)
 
-        if mslp_grib and prate_grib:
-            for region_name in REGION_CONFIGS:
-                plot_combined(mslp_grib, prate_grib, step, most_recent_run_time, region_name, csnow_grib, cfrzr_grib, cicep_grib)
-        else:
-            print(
-                f"Skipping forecast hour {step:02d} for run {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
-                "because required files are not available."
-            )
+try:
+    for step_group in forecast_steps:
+        for step in step_group:
+            step_gribs = all_downloaded_gribs.get(step, {})
+            mslp_grib = step_gribs.get("MSLMA")
+            prate_grib = step_gribs.get("PRATE")
+            csnow_grib = step_gribs.get("CSNOW")
+            cfrzr_grib = step_gribs.get("CFRZR")
+            cicep_grib = step_gribs.get("CICEP")
 
-        # Delete GRIB files after processing or skip
-        for grib_file in [mslp_grib, prate_grib, csnow_grib, cfrzr_grib, cicep_grib]:
-            if grib_file and os.path.exists(grib_file):
-                os.remove(grib_file)
+            if mslp_grib and prate_grib:
+                plot_data = load_combined_plot_data(mslp_grib, prate_grib, csnow_grib, cfrzr_grib, cicep_grib)
+                if plot_data is None:
+                    print(
+                        f"Skipping forecast hour {step:02d} for run {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
+                        "because required variables could not be loaded."
+                    )
+                    gc.collect()
+                    continue
 
-        # Collect garbage
-        gc.collect()
+                for region_name in REGION_CONFIGS:
+                    plot_combined(plot_data, step, most_recent_run_time, region_name)
+            else:
+                print(
+                    f"Skipping forecast hour {step:02d} for run {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
+                    "because required files are not available."
+                )
+
+            gc.collect()
 
     prune_old_runs(MAX_SAVED_RUNS, keep_run_id=current_run_id)
+finally:
+    cleanup_downloaded_gribs(all_downloaded_gribs)
+
 print("HRRR processing complete.")
