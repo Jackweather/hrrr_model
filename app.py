@@ -220,7 +220,12 @@ def list_images(
     )
 
 
-def run_scripts(scripts: list[tuple[str, str]], task_number: int, parallel: bool = False) -> None:
+def run_scripts(
+    scripts: list[tuple[str, str]],
+    task_number: int,
+    parallel: bool = False,
+    max_parallel: int | None = None,
+) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"task{task_number}.log"
     timing_path = LOG_DIR / f"task{task_number}_timing.txt"
@@ -248,34 +253,38 @@ def run_scripts(scripts: list[tuple[str, str]], task_number: int, parallel: bool
     with log_path.open("a", encoding="utf-8") as log_file:
         try:
             if parallel:
-                processes: list[tuple[str, subprocess.Popen[str], float]] = []
+                batch_size = max(1, max_parallel or len(scripts) or 1)
 
-                for script_path, working_dir in scripts:
-                    log_file.write(f"Starting {script_path}\n")
-                    log_file.flush()
+                for batch_start in range(0, len(scripts), batch_size):
+                    batch = scripts[batch_start:batch_start + batch_size]
+                    processes: list[tuple[str, subprocess.Popen[str], float]] = []
 
-                    started_perf = time.perf_counter()
-                    try:
-                        process = subprocess.Popen(
-                            [sys.executable, script_path],
-                            cwd=working_dir,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True,
-                        )
-                        processes.append((script_path, process, started_perf))
-                    except Exception as exc:
-                        log_file.write(f"Failed to run {script_path}: {exc}\n\n")
+                    for script_path, working_dir in batch:
+                        log_file.write(f"Starting {script_path}\n")
                         log_file.flush()
 
-                for script_path, process, started_perf in processes:
-                    stdout, stderr = process.communicate()
-                    if stdout:
-                        log_file.write(stdout)
-                    if stderr:
-                        log_file.write(stderr)
-                    log_file.write(f"Finished {script_path} with exit code {process.returncode}\n\n")
-                    log_file.flush()
+                        started_perf = time.perf_counter()
+                        try:
+                            process = subprocess.Popen(
+                                [sys.executable, script_path],
+                                cwd=working_dir,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                            )
+                            processes.append((script_path, process, started_perf))
+                        except Exception as exc:
+                            log_file.write(f"Failed to run {script_path}: {exc}\n\n")
+                            log_file.flush()
+
+                    for script_path, process, started_perf in processes:
+                        stdout, stderr = process.communicate()
+                        if stdout:
+                            log_file.write(stdout)
+                        if stderr:
+                            log_file.write(stderr)
+                        log_file.write(f"Finished {script_path} with exit code {process.returncode}\n\n")
+                        log_file.flush()
 
                 return
 
@@ -314,7 +323,7 @@ def run_task1():
         ("/opt/render/project/src/vis_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/weasd_EAST.py", "/opt/render/project/src"),
     ]
-    threading.Thread(target=run_scripts, args=(scripts, 3), kwargs={"parallel": True}, daemon=True).start()
+    threading.Thread(target=run_scripts, args=(scripts, 3), kwargs={"parallel": True, "max_parallel": 3}, daemon=True).start()
     return "Task started in background! Check logs folder for output.", 200
 
 
