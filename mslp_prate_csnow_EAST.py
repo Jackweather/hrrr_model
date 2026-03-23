@@ -154,6 +154,7 @@ REGION_CONFIGS = {
         "extent": CONUS_EXTENT,
     },
 }
+ACTIVE_REGION_NAMES = ("northeast",)
 
 
 # Set base directory for HRRR output
@@ -227,7 +228,7 @@ def prepare_run_output(run_time):
     os.makedirs(run_png_root_dir, exist_ok=True)
 
     run_png_dirs = {}
-    for region_name in REGION_CONFIGS:
+    for region_name in ACTIVE_REGION_NAMES:
         region_png_dir = os.path.join(run_png_root_dir, region_name)
         os.makedirs(region_png_dir, exist_ok=True)
         run_png_dirs[region_name] = region_png_dir
@@ -770,7 +771,7 @@ for step_group in forecast_steps:
         cicep_grib = get_hrrr_grib(most_recent_run_time, step, "CICEP")
 
         if mslp_grib and prate_grib:
-            for region_name in REGION_CONFIGS:
+            for region_name in ACTIVE_REGION_NAMES:
                 plot_combined(mslp_grib, prate_grib, step, most_recent_run_time, region_name, csnow_grib, cfrzr_grib, cicep_grib)
         else:
             print(
