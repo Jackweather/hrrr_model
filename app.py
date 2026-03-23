@@ -39,6 +39,12 @@ PRODUCTS = [
         "data_dir": Path(os.environ.get("HRRR_TMP2M_DATA_DIR", str(DATA_ROOT / "tmp2m_EAST"))).expanduser().resolve(),
         "script_path": APP_ROOT / "tmp2m_EAST.py",
     },
+    {
+        "id": "vis",
+        "label": "Visibility",
+        "data_dir": Path(os.environ.get("HRRR_VIS_DATA_DIR", str(DATA_ROOT / "vis_EAST"))).expanduser().resolve(),
+        "script_path": APP_ROOT / "vis_EAST.py",
+    },
 ]
 PRODUCT_IDS = {product["id"] for product in PRODUCTS}
 PRODUCTS_BY_ID = {product["id"]: product for product in PRODUCTS}
@@ -272,6 +278,7 @@ def run_task1():
     scripts = [
         ("/opt/render/project/src/mslp_prate_csnow_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/tmp2m_EAST.py", "/opt/render/project/src"),
+        ("/opt/render/project/src/vis_EAST.py", "/opt/render/project/src"),
     ]
     threading.Thread(target=run_scripts, args=(scripts, 3), kwargs={"parallel": True}, daemon=True).start()
     return "Task started in background! Check logs folder for output.", 200
