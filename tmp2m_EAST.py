@@ -349,13 +349,30 @@ def expand_extent_to_aspect(extent, target_aspect):
     return [min_lon, max_lon, min_lat, max_lat]
 
 
-temperature_levels = [-20, 0, 10, 20, 32, 40, 50, 60, 70, 80, 90, 100]
+temperature_levels = list(range(-20, 105, 5))
 temperature_tick_levels = temperature_levels
+
+# Custom colormap with freezing point aligned
 temperature_cmap = LinearSegmentedColormap.from_list(
     "temp_cmap",
     [
-        "#08306b", "#2171b5", "#6baed6", "#b3cde3", "#ffffff",
-        "#ffffb2", "#fecc5c", "#fd8d3c", "#f03b20", "#bd0026",
+        "#08306b",  # very cold (dark blue)
+        "#08519c",
+        "#2171b5",
+        "#4292c6",
+        "#6baed6",
+        "#9ecae1",
+        "#c6dbef",
+        "#deebf7",  # lighter blues approaching freezing
+        "#f7fbff",  # near 32°F (almost white)
+        "#ffffcc",  # just above freezing (light yellow)
+        "#ffeda0",
+        "#fed976",
+        "#feb24c",
+        "#fd8d3c",
+        "#fc4e2a",
+        "#e31a1c",
+        "#bd0026",  # hot (dark red)
     ],
     N=256,
 )
