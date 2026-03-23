@@ -253,17 +253,16 @@ def run_scripts(
     with log_path.open("a", encoding="utf-8") as log_file:
         try:
             if parallel:
-                batch_size = max(1, max_parallel or len(scripts) or 1)
+                concurrency_limit = max(1, max_parallel or len(scripts) or 1)
+                pending_scripts = list(scripts)
+                active_processes: list[tuple[str, subprocess.Popen[str]]] = []
 
-                for batch_start in range(0, len(scripts), batch_size):
-                    batch = scripts[batch_start:batch_start + batch_size]
-                    processes: list[tuple[str, subprocess.Popen[str], float]] = []
-
-                    for script_path, working_dir in batch:
+                while pending_scripts or active_processes:
+                    while pending_scripts and len(active_processes) < concurrency_limit:
+                        script_path, working_dir = pending_scripts.pop(0)
                         log_file.write(f"Starting {script_path}\n")
                         log_file.flush()
 
-                        started_perf = time.perf_counter()
                         try:
                             process = subprocess.Popen(
                                 [sys.executable, script_path],
@@ -272,12 +271,21 @@ def run_scripts(
                                 stderr=subprocess.PIPE,
                                 text=True,
                             )
-                            processes.append((script_path, process, started_perf))
+                            active_processes.append((script_path, process))
                         except Exception as exc:
                             log_file.write(f"Failed to run {script_path}: {exc}\n\n")
                             log_file.flush()
 
-                    for script_path, process, started_perf in processes:
+                    finished_processes: list[tuple[str, subprocess.Popen[str]]] = []
+                    for script_path, process in active_processes:
+                        if process.poll() is not None:
+                            finished_processes.append((script_path, process))
+
+                    if not finished_processes:
+                        time.sleep(0.5)
+                        continue
+
+                    for script_path, process in finished_processes:
                         stdout, stderr = process.communicate()
                         if stdout:
                             log_file.write(stdout)
@@ -285,6 +293,7 @@ def run_scripts(
                             log_file.write(stderr)
                         log_file.write(f"Finished {script_path} with exit code {process.returncode}\n\n")
                         log_file.flush()
+                        active_processes.remove((script_path, process))
 
                 return
 
