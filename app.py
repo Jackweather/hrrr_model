@@ -3,6 +3,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -216,61 +217,87 @@ def list_images(
 def run_scripts(scripts: list[tuple[str, str]], task_number: int, parallel: bool = False) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"task{task_number}.log"
+    timing_path = LOG_DIR / f"task{task_number}_timing.txt"
+    batch_started_at = datetime.now(timezone.utc)
+    batch_started_perf = time.perf_counter()
+
+    def format_duration(total_seconds: float) -> str:
+        rounded_seconds = max(int(round(total_seconds)), 0)
+        hours, remainder = divmod(rounded_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def write_timing_summary() -> None:
+        total_seconds = time.perf_counter() - batch_started_perf
+        completed_at = datetime.now(timezone.utc)
+        summary_lines = [
+            f"Task {task_number} timing summary",
+            f"Start time UTC: {batch_started_at.strftime('%H:%M:%S')}",
+            f"End time UTC: {completed_at.strftime('%H:%M:%S')}",
+            f"Time taken: {format_duration(total_seconds)}",
+        ]
+
+        timing_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
 
     with log_path.open("a", encoding="utf-8") as log_file:
-        if parallel:
-            processes: list[tuple[str, subprocess.Popen[str]]] = []
+        try:
+            if parallel:
+                processes: list[tuple[str, subprocess.Popen[str], float]] = []
+
+                for script_path, working_dir in scripts:
+                    log_file.write(f"Starting {script_path}\n")
+                    log_file.flush()
+
+                    started_perf = time.perf_counter()
+                    try:
+                        process = subprocess.Popen(
+                            [sys.executable, script_path],
+                            cwd=working_dir,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                        )
+                        processes.append((script_path, process, started_perf))
+                    except Exception as exc:
+                        log_file.write(f"Failed to run {script_path}: {exc}\n\n")
+                        log_file.flush()
+
+                for script_path, process, started_perf in processes:
+                    stdout, stderr = process.communicate()
+                    if stdout:
+                        log_file.write(stdout)
+                    if stderr:
+                        log_file.write(stderr)
+                    log_file.write(f"Finished {script_path} with exit code {process.returncode}\n\n")
+                    log_file.flush()
+
+                return
 
             for script_path, working_dir in scripts:
                 log_file.write(f"Starting {script_path}\n")
                 log_file.flush()
 
+                started_perf = time.perf_counter()
                 try:
-                    process = subprocess.Popen(
+                    result = subprocess.run(
                         [sys.executable, script_path],
                         cwd=working_dir,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
+                        capture_output=True,
                         text=True,
+                        check=False,
                     )
-                    processes.append((script_path, process))
+                    if result.stdout:
+                        log_file.write(result.stdout)
+                    if result.stderr:
+                        log_file.write(result.stderr)
+                    log_file.write(f"Finished {script_path} with exit code {result.returncode}\n")
                 except Exception as exc:
-                    log_file.write(f"Failed to run {script_path}: {exc}\n\n")
-                    log_file.flush()
+                    log_file.write(f"Failed to run {script_path}: {exc}\n")
 
-            for script_path, process in processes:
-                stdout, stderr = process.communicate()
-                if stdout:
-                    log_file.write(stdout)
-                if stderr:
-                    log_file.write(stderr)
-                log_file.write(f"Finished {script_path} with exit code {process.returncode}\n\n")
+                log_file.write("\n")
                 log_file.flush()
-
-            return
-
-        for script_path, working_dir in scripts:
-            log_file.write(f"Starting {script_path}\n")
-            log_file.flush()
-
-            try:
-                result = subprocess.run(
-                    [sys.executable, script_path],
-                    cwd=working_dir,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                if result.stdout:
-                    log_file.write(result.stdout)
-                if result.stderr:
-                    log_file.write(result.stderr)
-                log_file.write(f"Finished {script_path} with exit code {result.returncode}\n")
-            except Exception as exc:
-                log_file.write(f"Failed to run {script_path}: {exc}\n")
-
-            log_file.write("\n")
-            log_file.flush()
+        finally:
+            write_timing_summary()
 
 
 @app.route("/run-task1")
