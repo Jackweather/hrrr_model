@@ -332,7 +332,10 @@ def run_task1():
         ("/opt/render/project/src/vis_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/weasd_EAST.py", "/opt/render/project/src"),
     ]
-    threading.Thread(target=run_scripts, args=(scripts, 3), kwargs={"parallel": True, "max_parallel": 3}, daemon=True).start()
+    threading.Thread(
+        target=lambda: run_scripts(scripts, 3, parallel=True, max_parallel=3),
+        daemon=True,
+    ).start()
     return "Task started in background! Check logs folder for output.", 200
 
 
