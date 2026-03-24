@@ -52,6 +52,12 @@ PRODUCTS = [
         "data_dir": Path(os.environ.get("HRRR_WEASD_DATA_DIR", str(DATA_ROOT / "weasd_EAST"))).expanduser().resolve(),
         "script_path": APP_ROOT / "weasd_EAST.py",
     },
+    {
+        "id": "apcp",
+        "label": "Total Precipitation",
+        "data_dir": Path(os.environ.get("HRRR_APCP_DATA_DIR", str(DATA_ROOT / "apcp_EAST"))).expanduser().resolve(),
+        "script_path": APP_ROOT / "apcp_EAST.py",
+    },
 ]
 PRODUCT_IDS = {product["id"] for product in PRODUCTS}
 PRODUCTS_BY_ID = {product["id"]: product for product in PRODUCTS}
@@ -331,6 +337,7 @@ def run_task1():
         ("/opt/render/project/src/tmp2m_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/vis_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/weasd_EAST.py", "/opt/render/project/src"),
+        ("/opt/render/project/src/apcp_EAST.py", "/opt/render/project/src"),
     ]
     threading.Thread(
         target=lambda: run_scripts(scripts, 3, parallel=True, max_parallel=3),
