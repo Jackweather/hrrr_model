@@ -364,7 +364,7 @@ temperature_cmap = LinearSegmentedColormap.from_list(
         "#9ecae1",
         "#c6dbef",
         "#deebf7",  # lighter blues approaching freezing
-        "#f7fbff",  # near 32°F (almost white)
+        "#f8fff7",  # near 32°F (almost white)
         "#ffffcc",  # just above freezing (light yellow)
         "#ffeda0",
         "#fed976",
@@ -378,6 +378,9 @@ temperature_cmap = LinearSegmentedColormap.from_list(
 )
 temperature_norm = BoundaryNorm(temperature_levels, temperature_cmap.N)
 temperature_contour_levels = np.arange(-20, 101, 10)
+freezing_contour_level = [32]
+freezing_contour_color = "#0b3d91"
+freezing_contour_linewidth = 1.3
 temperature_contour_smoothing_sigma = 1.1
 
 forecast_steps = [forecast_step_numbers[i:i + 24] for i in range(0, len(forecast_step_numbers), 24)]
@@ -510,6 +513,17 @@ def plot_temperature(tmp_path, step, run_time, region_name):
             zorder=3,
         )
         axis.clabel(contours, fmt="%d", fontsize=6, colors="black", inline=True)
+        freezing_contour = axis.contour(
+            lon2d,
+            lat2d,
+            temperature_contours,
+            levels=freezing_contour_level,
+            colors=freezing_contour_color,
+            linewidths=freezing_contour_linewidth,
+            transform=ccrs.PlateCarree(),
+            zorder=4,
+        )
+        axis.clabel(freezing_contour, fmt="%d", fontsize=6, colors=freezing_contour_color, inline=True)
 
         try:
             counties_gdf = region_config.get("counties_gdf")
