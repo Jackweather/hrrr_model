@@ -179,6 +179,8 @@ variable_csnow = "CSNOW"  # Snowfall Rate
 variable_cfrzr = "CFRZR"  # Freezing Rain Rate
 variable_cicep = "CICEP"  # Sleet Rate
 RUN_AVAILABILITY_DELAY_MINUTES = 50
+PREFERRED_CYCLE_HOURS = (0, 6, 12, 18)
+MAX_RUN_SEARCH_HOURS = 30
 
 # Adjust available hours to include 03Z, 09Z, 15Z, 21Z with a max forecast range of 18 hours
 available_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
@@ -206,6 +208,11 @@ def print_run_hour_mapping(reference_utc_time):
 
 def floor_to_hour(dt_value):
     return dt_value.replace(minute=0, second=0, microsecond=0)
+
+
+def get_preferred_cycle_start(reference_utc_time):
+    preferred_hour = max(hour for hour in PREFERRED_CYCLE_HOURS if hour <= reference_utc_time.hour)
+    return reference_utc_time.replace(hour=preferred_hour, minute=0, second=0, microsecond=0)
 
 
 def get_run_id(run_time):
@@ -292,6 +299,7 @@ now_utc = datetime.now(timezone.utc)
 current_utc_time = floor_to_hour(now_utc)
 current_eastern_time = current_utc_time.astimezone(EASTERN_TZ)
 selection_reference_utc = floor_to_hour(now_utc - timedelta(minutes=RUN_AVAILABILITY_DELAY_MINUTES))
+selection_start_utc = get_preferred_cycle_start(selection_reference_utc)
 most_recent_run_time = None
 
 print(f"Current time UTC: {current_utc_time.strftime('%Y-%m-%d %HZ')}")
@@ -301,34 +309,22 @@ print(
     f"{selection_reference_utc.strftime('%Y-%m-%d %HZ')} "
     f"({format_eastern_time(selection_reference_utc)})"
 )
+print("Preferring anchor cycles: 00Z, 06Z, 12Z, 18Z")
+print(
+    f"Starting run search from preferred cycle: {selection_start_utc.strftime('%Y-%m-%d %HZ')} "
+    f"({format_eastern_time(selection_start_utc)})"
+)
 print_run_hour_mapping(current_utc_time)
 
-# Iterate backward to find the most recent valid run, checking only runs old enough to be complete
-for offset in range(24):  # Check up to 24 hours back
-    candidate_time = selection_reference_utc - timedelta(hours=offset)
+# Iterate backward from the preferred 6-hour anchor cycle.
+for offset in range(MAX_RUN_SEARCH_HOURS + 1):
+    candidate_time = selection_start_utc - timedelta(hours=offset)
     if candidate_time.hour in available_hours and is_valid_run(candidate_time):
         most_recent_run_time = candidate_time
         break
 
-# If no valid run found, fall back to previous run (6 hours earlier)
 if most_recent_run_time is None:
-    print("No valid run time found in the available hours. Searching for fallback run hour one hour at a time.")
-    fallback_found = False
-    for offset in range(1, 25):  # Search up to 24 hours back, one hour at a time
-        candidate_time = selection_reference_utc - timedelta(hours=offset)
-        candidate_hour = candidate_time.hour
-        if candidate_hour in available_hours:
-            candidate_time = floor_to_hour(candidate_time)
-            if is_valid_run(candidate_time):
-                most_recent_run_time = candidate_time
-                print(
-                    f"Using fallback run time: {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
-                    f"({format_eastern_time(most_recent_run_time)})"
-                )
-                fallback_found = True
-                break
-    if not fallback_found:
-        raise ValueError("No valid run time found, including fallback.")
+    raise ValueError("No valid run time found within the anchored search window.")
 
 print(
     f"Selected HRRR run: {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
