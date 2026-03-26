@@ -20,6 +20,7 @@ from matplotlib import patheffects
 from scipy.ndimage import maximum_filter, minimum_filter, label, generate_binary_structure
 import geopandas as gpd
 import shutil
+from select_east_run import RUN_SELECTION_FILE, read_selected_run_time
 
 
 EASTERN_TZ = ZoneInfo("America/New_York")
@@ -178,43 +179,11 @@ variable_prate = "PRATE"  # Precipitation Rate
 variable_csnow = "CSNOW"  # Snowfall Rate
 variable_cfrzr = "CFRZR"  # Freezing Rain Rate
 variable_cicep = "CICEP"  # Sleet Rate
-RUN_AVAILABILITY_DELAY_MINUTES = 50
-RUN_SELECTION_OVERRIDE_WINDOW_MINUTES = 59
-
-LOCAL_RUN_SELECTION_OVERRIDES = (
-    ((15, 45), 18),
-    ((21, 45), 12),
-    ((3, 45), 0),
-    ((9, 45), 6),
-)
-PREFERRED_RUN_HOURS = (0, 6, 12, 18)
-
-# Adjust available hours to include 03Z, 09Z, 15Z, 21Z with a max forecast range of 18 hours
-available_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
-max_forecast_hours = {1, 2, 3, 4, 5,7,8, 9, 10, 11, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23}  # These runs only go out to 18 hours
-
-# HRRR run hours are in UTC. In America/New_York that means, for example:
-# 00Z = 8 PM EDT / 7 PM EST on the previous local calendar day
-# 01Z = 9 PM EDT / 8 PM EST
-# 02Z = 10 PM EDT / 9 PM EST
-# 03Z = 11 PM EDT / 10 PM EST
-# The code below uses America/New_York directly so it automatically handles EST vs EDT.
 
 
 def format_eastern_time(dt_utc):
     local_time = dt_utc.astimezone(EASTERN_TZ)
     return local_time.strftime("%Y-%m-%d %I:%M %p %Z")
-
-
-def print_run_hour_mapping(reference_utc_time):
-    print("HRRR run hour mapping for America/New_York:")
-    for run_hour in available_hours:
-        run_utc_time = reference_utc_time.replace(hour=run_hour, minute=0, second=0, microsecond=0)
-        print(f"  {run_hour:02d}Z = {format_eastern_time(run_utc_time)}")
-
-
-def floor_to_hour(dt_value):
-    return dt_value.replace(minute=0, second=0, microsecond=0)
 
 
 def get_run_id(run_time):
@@ -231,8 +200,8 @@ def prepare_run_output(run_time):
         try:
             shutil.rmtree(run_png_root_dir)
             print(f"Removed existing png directory for run {run_id}: {run_png_root_dir}")
-        except Exception as e:
-            print(f"Failed to remove png directory {run_png_root_dir}: {e}")
+        except Exception as exc:
+            print(f"Failed to remove png directory {run_png_root_dir}: {exc}")
 
     os.makedirs(run_png_root_dir, exist_ok=True)
 
@@ -269,26 +238,9 @@ def prune_old_runs(max_saved_runs, keep_run_id=None):
         try:
             shutil.rmtree(run_path)
             print(f"Removed archived run: {run_name}")
-        except Exception as e:
-            print(f"Failed to remove archived run {run_name}: {e}")
+        except Exception as exc:
+            print(f"Failed to remove archived run {run_name}: {exc}")
 
-# Function to validate if a run time is accessible
-def is_valid_run(run_time):
-    """Check if HRRR data for the given run time is accessible."""
-    test_date_str = run_time.strftime("%Y%m%d")
-    test_hour_str = run_time.strftime("%H")
-    test_file_name = f"hrrr.t{test_hour_str}z.wrfsfcf01.grib2"
-    test_url = (
-        f"{base_url_hrrr}?file={test_file_name}"
-        f"&lev_surface=on&lev_mean_sea_level=on"
-        f"&var_MSLMA=on"
-        f"&dir=%2Fhrrr.{test_date_str}%2Fconus"
-    )
-    try:
-        response = requests.head(test_url, timeout=5)
-        return response.status_code == 200
-    except Exception:
-        return False
 
 # Function to get the forecast steps based on the run hour
 def get_forecast_steps(run_hour):
@@ -297,91 +249,9 @@ def get_forecast_steps(run_hour):
     return list(range(1, 49, 1))  # Default 48-hour forecast in 3-hour steps
 
 
-def get_forced_run_time(now_utc, now_local):
-    for (start_hour, start_minute), run_hour in LOCAL_RUN_SELECTION_OVERRIDES:
-        window_start_local = now_local.replace(
-            hour=start_hour,
-            minute=start_minute,
-            second=0,
-            microsecond=0,
-        )
-        window_end_local = window_start_local + timedelta(minutes=RUN_SELECTION_OVERRIDE_WINDOW_MINUTES)
-        if window_start_local <= now_local < window_end_local:
-            forced_run_time = now_utc.replace(hour=run_hour, minute=0, second=0, microsecond=0)
-            if forced_run_time > now_utc:
-                forced_run_time -= timedelta(days=1)
-            return floor_to_hour(forced_run_time), window_start_local, window_end_local
-
-    return None, None, None
-
-
-def get_latest_preferred_run_anchor(reference_utc):
-    for run_hour in reversed(PREFERRED_RUN_HOURS):
-        if reference_utc.hour >= run_hour:
-            return reference_utc.replace(hour=run_hour, minute=0, second=0, microsecond=0)
-
-    previous_day = reference_utc - timedelta(days=1)
-    return previous_day.replace(hour=PREFERRED_RUN_HOURS[-1], minute=0, second=0, microsecond=0)
-
-# Calculate the most recent HRRR run dynamically
-now_utc = datetime.now(timezone.utc)
-current_utc_time = floor_to_hour(now_utc)
-current_eastern_time = current_utc_time.astimezone(EASTERN_TZ)
-selection_reference_utc = floor_to_hour(now_utc - timedelta(minutes=RUN_AVAILABILITY_DELAY_MINUTES))
-selection_anchor_utc, override_window_start_local, override_window_end_local = get_forced_run_time(
-    now_utc,
-    now_utc.astimezone(EASTERN_TZ),
-)
-if selection_anchor_utc is None:
-    selection_anchor_utc = get_latest_preferred_run_anchor(selection_reference_utc)
-most_recent_run_time = None
-
-print(f"Current time UTC: {current_utc_time.strftime('%Y-%m-%d %HZ')}")
-print(f"Current time Eastern: {current_eastern_time.strftime('%Y-%m-%d %I:%M %p %Z')}")
+most_recent_run_time = read_selected_run_time()
 print(
-    f"Selecting from runs at least {RUN_AVAILABILITY_DELAY_MINUTES} minutes old: "
-    f"{selection_reference_utc.strftime('%Y-%m-%d %HZ')} "
-    f"({format_eastern_time(selection_reference_utc)})"
-)
-if override_window_start_local is not None:
-    print(
-        "Applying local override window "
-        f"{override_window_start_local.strftime('%I:%M %p')} to "
-        f"{override_window_end_local.strftime('%I:%M %p %Z')}: "
-        f"anchoring selection to {selection_anchor_utc.strftime('%Y-%m-%d %HZ')} "
-        f"({format_eastern_time(selection_anchor_utc)})"
-    )
-print_run_hour_mapping(current_utc_time)
-
-# Iterate backward to find the most recent valid run, checking only runs old enough to be complete
-for offset in range(24):  # Check up to 24 hours back
-    candidate_time = selection_anchor_utc - timedelta(hours=offset)
-    if candidate_time.hour in available_hours and is_valid_run(candidate_time):
-        most_recent_run_time = candidate_time
-        break
-
-# If no valid run found, fall back to previous run (6 hours earlier)
-if most_recent_run_time is None:
-    print("No valid run time found in the available hours. Searching for fallback run hour one hour at a time.")
-    fallback_found = False
-    for offset in range(1, 25):  # Search up to 24 hours back, one hour at a time
-        candidate_time = selection_anchor_utc - timedelta(hours=offset)
-        candidate_hour = candidate_time.hour
-        if candidate_hour in available_hours:
-            candidate_time = floor_to_hour(candidate_time)
-            if is_valid_run(candidate_time):
-                most_recent_run_time = candidate_time
-                print(
-                    f"Using fallback run time: {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
-                    f"({format_eastern_time(most_recent_run_time)})"
-                )
-                fallback_found = True
-                break
-    if not fallback_found:
-        raise ValueError("No valid run time found, including fallback.")
-
-print(
-    f"Selected HRRR run: {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
+    f"Selected HRRR run from {RUN_SELECTION_FILE}: {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
     f"({format_eastern_time(most_recent_run_time)})"
 )
 
