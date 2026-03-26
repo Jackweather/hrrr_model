@@ -339,6 +339,7 @@ def run_scripts(
 @app.route("/run-task1")
 def run_task1():
     scripts = [
+        ("/opt/render/project/src/select_east_run.py", "/opt/render/project/src"),
         ("/opt/render/project/src/mslp_prate_csnow_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/tmp2m_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/vis_EAST.py", "/opt/render/project/src"),
