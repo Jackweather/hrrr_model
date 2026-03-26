@@ -170,7 +170,7 @@ processed_steps_file = None
 base_url_hrrr = "https://nomads.ncep.noaa.gov/cgi-bin/filter_hrrr_2d.pl"
 variable_weasd = "WEASD"
 RUN_AVAILABILITY_DELAY_MINUTES = 50
-RUN_SELECTION_OVERRIDE_WINDOW_MINUTES = 39
+RUN_SELECTION_OVERRIDE_WINDOW_MINUTES = 59
 
 LOCAL_RUN_SELECTION_OVERRIDES = (
     ((15, 45), 18),
@@ -178,6 +178,7 @@ LOCAL_RUN_SELECTION_OVERRIDES = (
     ((3, 45), 0),
     ((9, 45), 6),
 )
+PREFERRED_RUN_HOURS = (0, 6, 12, 18)
 
 available_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
 
@@ -295,6 +296,15 @@ def get_forced_run_time(now_utc, now_local):
     return None, None, None
 
 
+def get_latest_preferred_run_anchor(reference_utc):
+    for run_hour in reversed(PREFERRED_RUN_HOURS):
+        if reference_utc.hour >= run_hour:
+            return reference_utc.replace(hour=run_hour, minute=0, second=0, microsecond=0)
+
+    previous_day = reference_utc - timedelta(days=1)
+    return previous_day.replace(hour=PREFERRED_RUN_HOURS[-1], minute=0, second=0, microsecond=0)
+
+
 now_utc = datetime.now(timezone.utc)
 current_utc_time = floor_to_hour(now_utc)
 current_eastern_time = current_utc_time.astimezone(EASTERN_TZ)
@@ -304,7 +314,7 @@ selection_anchor_utc, override_window_start_local, override_window_end_local = g
     now_utc.astimezone(EASTERN_TZ),
 )
 if selection_anchor_utc is None:
-    selection_anchor_utc = selection_reference_utc
+    selection_anchor_utc = get_latest_preferred_run_anchor(selection_reference_utc)
 most_recent_run_time = None
 
 print(f"Current time UTC: {current_utc_time.strftime('%Y-%m-%d %HZ')}")
