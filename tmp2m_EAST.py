@@ -16,6 +16,7 @@ import requests
 import xarray as xr
 from matplotlib import patheffects
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap
+from select_east_run import RUN_SELECTION_FILE, read_selected_run_time
 from scipy.ndimage import gaussian_filter
 
 matplotlib.use("Agg")
@@ -170,34 +171,11 @@ processed_steps_file = None
 
 base_url_hrrr = "https://nomads.ncep.noaa.gov/cgi-bin/filter_hrrr_2d.pl"
 variable_tmp = "TMP"
-RUN_AVAILABILITY_DELAY_MINUTES = 50
-RUN_SELECTION_OVERRIDE_WINDOW_MINUTES = 59
-
-LOCAL_RUN_SELECTION_OVERRIDES = (
-    ((15, 45), 18),
-    ((21, 45), 12),
-    ((3, 45), 0),
-    ((9, 45), 6),
-)
-PREFERRED_RUN_HOURS = (0, 6, 12, 18)
-
-available_hours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
 
 
 def format_eastern_time(dt_utc):
     local_time = dt_utc.astimezone(EASTERN_TZ)
     return local_time.strftime("%Y-%m-%d %I:%M %p %Z")
-
-
-def print_run_hour_mapping(reference_utc_time):
-    print("HRRR run hour mapping for America/New_York:")
-    for run_hour in available_hours:
-        run_utc_time = reference_utc_time.replace(hour=run_hour, minute=0, second=0, microsecond=0)
-        print(f"  {run_hour:02d}Z = {format_eastern_time(run_utc_time)}")
-
-
-def floor_to_hour(dt_value):
-    return dt_value.replace(minute=0, second=0, microsecond=0)
 
 
 def get_run_id(run_time):
@@ -256,112 +234,15 @@ def prune_old_runs(max_saved_runs, keep_run_id=None):
             print(f"Failed to remove archived run {run_name}: {exc}")
 
 
-def is_valid_run(run_time):
-    test_date_str = run_time.strftime("%Y%m%d")
-    test_hour_str = run_time.strftime("%H")
-    test_file_name = f"hrrr.t{test_hour_str}z.wrfsfcf01.grib2"
-    test_url = (
-        f"{base_url_hrrr}?file={test_file_name}"
-        f"&lev_2_m_above_ground=on"
-        f"&var_TMP=on"
-        f"&dir=%2Fhrrr.{test_date_str}%2Fconus"
-    )
-    try:
-        response = requests.head(test_url, timeout=5)
-        return response.status_code == 200
-    except Exception:
-        return False
-
-
 def get_forecast_steps(run_hour):
     if run_hour in {3, 9, 13, 14, 15, 16, 21}:
         return list(range(1, 19))
     return list(range(1, 49))
 
 
-def get_forced_run_time(now_utc, now_local):
-    for (start_hour, start_minute), run_hour in LOCAL_RUN_SELECTION_OVERRIDES:
-        window_start_local = now_local.replace(
-            hour=start_hour,
-            minute=start_minute,
-            second=0,
-            microsecond=0,
-        )
-        window_end_local = window_start_local + timedelta(minutes=RUN_SELECTION_OVERRIDE_WINDOW_MINUTES)
-        if window_start_local <= now_local < window_end_local:
-            forced_run_time = now_utc.replace(hour=run_hour, minute=0, second=0, microsecond=0)
-            if forced_run_time > now_utc:
-                forced_run_time -= timedelta(days=1)
-            return floor_to_hour(forced_run_time), window_start_local, window_end_local
-
-    return None, None, None
-
-
-def get_latest_preferred_run_anchor(reference_utc):
-    for run_hour in reversed(PREFERRED_RUN_HOURS):
-        if reference_utc.hour >= run_hour:
-            return reference_utc.replace(hour=run_hour, minute=0, second=0, microsecond=0)
-
-    previous_day = reference_utc - timedelta(days=1)
-    return previous_day.replace(hour=PREFERRED_RUN_HOURS[-1], minute=0, second=0, microsecond=0)
-
-
-now_utc = datetime.now(timezone.utc)
-current_utc_time = floor_to_hour(now_utc)
-current_eastern_time = current_utc_time.astimezone(EASTERN_TZ)
-selection_reference_utc = floor_to_hour(now_utc - timedelta(minutes=RUN_AVAILABILITY_DELAY_MINUTES))
-selection_anchor_utc, override_window_start_local, override_window_end_local = get_forced_run_time(
-    now_utc,
-    now_utc.astimezone(EASTERN_TZ),
-)
-if selection_anchor_utc is None:
-    selection_anchor_utc = get_latest_preferred_run_anchor(selection_reference_utc)
-most_recent_run_time = None
-
-print(f"Current time UTC: {current_utc_time.strftime('%Y-%m-%d %HZ')}")
-print(f"Current time Eastern: {current_eastern_time.strftime('%Y-%m-%d %I:%M %p %Z')}")
+most_recent_run_time = read_selected_run_time()
 print(
-    f"Selecting from runs at least {RUN_AVAILABILITY_DELAY_MINUTES} minutes old: "
-    f"{selection_reference_utc.strftime('%Y-%m-%d %HZ')} "
-    f"({format_eastern_time(selection_reference_utc)})"
-)
-if override_window_start_local is not None:
-    print(
-        "Applying local override window "
-        f"{override_window_start_local.strftime('%I:%M %p')} to "
-        f"{override_window_end_local.strftime('%I:%M %p %Z')}: "
-        f"anchoring selection to {selection_anchor_utc.strftime('%Y-%m-%d %HZ')} "
-        f"({format_eastern_time(selection_anchor_utc)})"
-    )
-print_run_hour_mapping(current_utc_time)
-
-for offset in range(24):
-    candidate_time = selection_anchor_utc - timedelta(hours=offset)
-    if candidate_time.hour in available_hours and is_valid_run(candidate_time):
-        most_recent_run_time = candidate_time
-        break
-
-if most_recent_run_time is None:
-    print("No valid run time found in the available hours. Searching for fallback run hour one hour at a time.")
-    fallback_found = False
-    for offset in range(1, 25):
-        candidate_time = selection_anchor_utc - timedelta(hours=offset)
-        candidate_hour = candidate_time.hour
-        if candidate_hour in available_hours:
-            candidate_time = floor_to_hour(candidate_time)
-            if is_valid_run(candidate_time):
-                most_recent_run_time = candidate_time
-                print(
-                    f"Using fallback run time: {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
-                    f"({format_eastern_time(most_recent_run_time)})"
-                )
-                fallback_found = True
-                break
-    if not fallback_found:
-        raise ValueError("No valid run time found, including fallback.")
-
-print(
-    f"Selected HRRR run: {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
+    f"Selected HRRR run from {RUN_SELECTION_FILE}: {most_recent_run_time.strftime('%Y-%m-%d %HZ')} "
     f"({format_eastern_time(most_recent_run_time)})"
 )
 
