@@ -70,6 +70,12 @@ PRODUCTS = [
         "data_dir": Path(os.environ.get("HRRR_CLOUDCOVER_DATA_DIR", str(DATA_ROOT / "cloudcover_EAST"))).expanduser().resolve(),
         "script_path": APP_ROOT / "cloudcover_EAST.py",
     },
+    {
+        "id": "maxwind",
+        "label": "10 m Max Wind",
+        "data_dir": Path(os.environ.get("HRRR_MAXWIND_DATA_DIR", str(DATA_ROOT / "maxwind_EAST"))).expanduser().resolve(),
+        "script_path": APP_ROOT / "maxwind_EAST.py",
+    },
 ]
 PRODUCT_IDS = {product["id"] for product in PRODUCTS}
 PRODUCTS_BY_ID = {product["id"]: product for product in PRODUCTS}
@@ -352,6 +358,8 @@ def run_task1():
         ("/opt/render/project/src/weasd_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/apcp_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/rh_EAST.py", "/opt/render/project/src"),
+        ("/opt/render/project/src/cloudcover_EAST.py", "/opt/render/project/src"),
+        
     ]
     threading.Thread(
         target=lambda: run_scripts(scripts, 3, parallel=True, max_parallel=3),
