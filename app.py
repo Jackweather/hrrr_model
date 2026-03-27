@@ -359,6 +359,7 @@ def run_task1():
         ("/opt/render/project/src/apcp_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/rh_EAST.py", "/opt/render/project/src"),
         ("/opt/render/project/src/cloudcover_EAST.py", "/opt/render/project/src"),
+        ("/opt/render/project/src/maxwind_EAST.py", "/opt/render/project/src"),
         
     ]
     threading.Thread(
