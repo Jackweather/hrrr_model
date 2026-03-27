@@ -64,6 +64,12 @@ PRODUCTS = [
         "data_dir": Path(os.environ.get("HRRR_RH_DATA_DIR", str(DATA_ROOT / "rh_EAST"))).expanduser().resolve(),
         "script_path": APP_ROOT / "rh_EAST.py",
     },
+    {
+        "id": "cloudcover",
+        "label": "Cloud Cover",
+        "data_dir": Path(os.environ.get("HRRR_CLOUDCOVER_DATA_DIR", str(DATA_ROOT / "cloudcover_EAST"))).expanduser().resolve(),
+        "script_path": APP_ROOT / "cloudcover_EAST.py",
+    },
 ]
 PRODUCT_IDS = {product["id"] for product in PRODUCTS}
 PRODUCTS_BY_ID = {product["id"]: product for product in PRODUCTS}
